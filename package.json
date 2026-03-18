@@ -1,24 +1,47 @@
 {
-  "name": "social_democracy_alternate_history",
+  "name": "dynamic_social_democracy",
   "version": "0.11.1",
-  "description": "Building the game:",
-  "main": "out/html/index.html",
+  "private": true,
+  "description": "An interactive fiction game about the Weimar Republic being migrated off DendryNexus.",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "scripts": {
-    "dendrynexus": "dendrynexus"
+    "build": "npm run build --workspace @dsd/web",
+    "dev": "npm run dev --workspace @dsd/web",
+    "preview": "npm run preview --workspace @dsd/web",
+    "dev:server": "npm run dev --workspace @dsd/server",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "test:e2e": "npm run test:e2e --workspace @dsd/web",
+    "legacy-build": "dendrynexus make-html .",
+    "dendrynexus": "dendrynexus",
+    "migrate:legacy-scenes": "ts-node scripts/migrate.ts",
+    "clean": "node -e \"const fs=require('fs'); ['out/html','output/playwright','apps/web/test-results','apps/web/playwright-report'].forEach((p)=>fs.rmSync(p,{recursive:true,force:true}))\""
+  },
+  "engines": {
+    "node": ">=22.0.0"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/originn0/dynamic_social_democracy.git"
   },
-  "keywords": [],
+  "keywords": [
+    "interactive-fiction",
+    "dendry",
+    "weimar-republic",
+    "alternate-history"
+  ],
   "author": "Autumn Chen",
   "license": "MIT",
   "bugs": {
     "url": "https://github.com/originn0/dynamic_social_democracy/issues"
   },
   "homepage": "https://github.com/originn0/dynamic_social_democracy",
-  "dependencies": {
+  "devDependencies": {
     "dendrynexus": "github:originn0/dendrynexus",
-    "parliament-svg": "^3.0.0"
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
   }
 }

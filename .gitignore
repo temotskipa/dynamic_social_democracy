@@ -1,6 +1,15 @@
 
 /node_modules
+/apps/web/node_modules/
+/scripts_dist/
 out/game.json
+out/html/
 out/html/core.js
 package-lock.json
 out/html/jquery-1.11.1.min.js
+/output/playwright/
+/apps/web/playwright/.cache/
+/apps/web/test-results/
+/apps/web/playwright-report/
+/build_error_vite.log
+/tsc_errors_final_*.txt
