@@ -34,6 +34,68 @@ export interface GameState {
   currentSceneId: string;
 }
 
+export type JsonPrimitive = string | number | boolean | null;
+export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
+
+export interface ContentMetadata {
+  id: string;
+  title: string;
+  version: string;
+  sourceFormat: "dry" | "json";
+  generatedAt: string;
+}
+
+export interface MechanicsRef {
+  id: string;
+  params?: Record<string, JsonValue>;
+}
+
+export type ConditionRef = MechanicsRef;
+export type EffectRef = MechanicsRef;
+
+export interface ChoiceRecord {
+  id: string;
+  labelHtml: string;
+  nextSceneId: string | null;
+  conditions?: ConditionRef[];
+  effects?: EffectRef[];
+}
+
+export interface SceneRecord {
+  id: string;
+  titleHtml: string;
+  subtitleHtml?: string | null;
+  bodyHtml: string;
+  conditions?: ConditionRef[];
+  onArrival?: EffectRef[];
+  onDisplay?: EffectRef[];
+  choices: ChoiceRecord[];
+  tags?: string[];
+  sourcePath?: string;
+}
+
+export interface QDisplayRecord {
+  id: string;
+  sourcePath: string;
+  body: string;
+}
+
+export interface AssetManifest {
+  references: string[];
+}
+
+export interface ContentBundle {
+  metadata: ContentMetadata;
+  scenes: Record<string, SceneRecord>;
+  qdisplays: Record<string, QDisplayRecord>;
+  assets: AssetManifest;
+  mechanics: {
+    conditions: string[];
+    effects: string[];
+  };
+  initialSceneId: string;
+}
+
 export interface SessionChoiceSnapshot {
   id: string;
   text: string;
@@ -86,7 +148,9 @@ export interface Scene {
 export interface GameBundle {
   id: string;
   scenes: Record<string, Scene>;
+  formatText?: (text: string, state: Readonly<GameState>) => string;
   resolveInitialSceneId: (state: Readonly<GameState>) => string;
+  resolveSceneId?: (sceneIdOrTag: string, state: Readonly<GameState>) => string | null;
 }
 
 export interface GameSession {
@@ -95,7 +159,7 @@ export interface GameSession {
 }
 
 export interface SerializedGameSession {
-  version: 1;
+  version: 1 | 2;
   bundleId: string;
   state: GameState;
 }

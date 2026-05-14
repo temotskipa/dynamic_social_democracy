@@ -2,26 +2,30 @@
   "name": "dynamic_social_democracy",
   "version": "0.11.1",
   "private": true,
+  "type": "module",
   "description": "An interactive fiction game about the Weimar Republic being migrated off DendryNexus.",
   "workspaces": [
     "apps/*",
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build --workspace @dsd/web",
-    "dev": "npm run dev --workspace @dsd/web",
+    "build": "node --run compile:content && node --run validate:content && node --run build:web && node --run budget:bundle",
+    "build:web": "npm run build --workspace @dsd/web",
+    "dev": "node --run compile:content && npm run dev --workspace @dsd/web",
     "preview": "npm run preview --workspace @dsd/web",
     "dev:server": "npm run dev --workspace @dsd/server",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "test": "npm run test --workspaces --if-present",
+    "test": "node --run compile:content && node --run validate:content && node --run test:node && npm run test --workspaces --if-present",
+    "test:node": "node --experimental-strip-types --test packages/engine/src/*.test.ts packages/content-compiler/src/*.test.ts tests/*.test.ts",
     "test:e2e": "npm run test:e2e --workspace @dsd/web",
-    "legacy-build": "dendrynexus make-html .",
-    "dendrynexus": "dendrynexus",
-    "migrate:legacy-scenes": "ts-node scripts/migrate.ts",
+    "compile:content": "node --experimental-strip-types scripts/migrate.ts --json",
+    "validate:content": "node --experimental-strip-types scripts/validate-content.ts",
+    "validate:permissions": "node --permission --allow-fs-read=. --allow-fs-write=apps/web/src/content/generated --experimental-strip-types scripts/migrate.ts --json",
+    "budget:bundle": "node --experimental-strip-types scripts/check-bundle-budget.ts",
     "clean": "node -e \"const fs=require('fs'); ['out/html','output/playwright','apps/web/test-results','apps/web/playwright-report'].forEach((p)=>fs.rmSync(p,{recursive:true,force:true}))\""
   },
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=26.0.0 <27"
   },
   "repository": {
     "type": "git",
@@ -40,8 +44,6 @@
   },
   "homepage": "https://github.com/originn0/dynamic_social_democracy",
   "devDependencies": {
-    "dendrynexus": "github:originn0/dendrynexus",
-    "ts-node": "^10.9.2",
     "typescript": "^5.9.3"
   }
 }

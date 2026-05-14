@@ -8,6 +8,20 @@ import {
     saveSession,
     sessionView,
 } from './engine/state';
+import './styles.css';
+
+function formatRichText(html: string) {
+    return html
+        .replace(/\{!/g, '')
+        .replace(/!\}/g, '')
+        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+        .replace(/^\s*= (.*)$/gm, '<h2>$1</h2>')
+        .replace(/\n/g, '<br/>');
+}
+
+function RichText({ html, className }: { html: string; className?: string }) {
+    return <span className={className} dangerouslySetInnerHTML={{ __html: formatRichText(html) }} />;
+}
 
 export function App() {
     const view = sessionView.value;
@@ -37,6 +51,7 @@ export function App() {
             subtitle: view.subtitle,
             time: view.time,
             visibleChoices: view.visibleChoices,
+            debugFlags: view.debugFlags,
             persistence: {
                 adapterKind: view.adapterKind,
                 hasPersistedSession,
@@ -93,76 +108,72 @@ export function App() {
         setPersistenceStatus(nextView.persistenceError ?? 'Started a new session.');
     };
 
-    const formatContent = (html: string) => {
-        return html
-            .replace(/\n/g, '<br/>')
-            .replace(/= (.*)/g, '<h1>$1</h1>');
-    };
-
     return (
-        <div className="game-container" style={{ padding: '2rem', maxWidth: '800px', margin: '0 auto', fontFamily: 'sans-serif' }}>
-            <header>
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', alignItems: 'flex-start', flexWrap: 'wrap' }}>
-                    <div>
-                        {view.title && <h1 style={{ fontSize: '2em', marginBottom: '0.5em' }}>{view.title}</h1>}
-                        {view.subtitle && <h3 style={{ color: '#666' }}>{view.subtitle}</h3>}
-                    </div>
-                    <section aria-label="Session controls" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', minWidth: '220px' }}>
-                        <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-                            <button onClick={() => void handleSave()} style={{ padding: '0.5rem 0.75rem' }}>
-                                Save Session
-                            </button>
-                            <button
-                                onClick={() => void handleLoad()}
-                                disabled={!hasPersistedSession}
-                                style={{ padding: '0.5rem 0.75rem' }}
-                            >
-                                Load Session
-                            </button>
-                            <button onClick={() => void handleReset()} style={{ padding: '0.5rem 0.75rem' }}>
-                                New Session
-                            </button>
-                        </div>
-                        <p role="status" style={{ margin: 0, color: '#555', fontSize: '0.9em' }}>
-                            {persistenceStatus ?? (hasPersistedSession ? 'Saved session available in this browser.' : 'No saved session in this browser.')}
-                        </p>
-                    </section>
+        <div className="app-shell">
+            <aside className="status-rail" aria-label="Game status">
+                <div className="brand-block">
+                    <span className="brand-kicker">Dynamic</span>
+                    <strong>Social Democracy</strong>
                 </div>
-            </header>
+                <dl className="status-grid">
+                    <div>
+                        <dt>Scene</dt>
+                        <dd>{view.sceneId}</dd>
+                    </div>
+                    <div>
+                        <dt>Date</dt>
+                        <dd>{view.time.year}-{view.time.month}</dd>
+                    </div>
+                    <div>
+                        <dt>Session</dt>
+                        <dd>{view.adapterKind}</dd>
+                    </div>
+                    <div>
+                        <dt>Saved</dt>
+                        <dd>{hasPersistedSession ? 'yes' : 'no'}</dd>
+                    </div>
+                </dl>
+                <section className="session-panel" aria-label="Session controls">
+                    <button aria-label="Save Session" onClick={() => void handleSave()}>Save</button>
+                    <button aria-label="Load Session" onClick={() => void handleLoad()} disabled={!hasPersistedSession}>Load</button>
+                    <button aria-label="New Session" onClick={() => void handleReset()}>New</button>
+                    <p role="status">
+                        {persistenceStatus ?? (hasPersistedSession ? 'Saved session available in this browser.' : 'No saved session in this browser.')}
+                    </p>
+                </section>
+            </aside>
 
-            <main className="scene-content" style={{ margin: '2rem 0', lineHeight: '1.6', fontSize: '1.1em' }}>
-                <div dangerouslySetInnerHTML={{ __html: formatContent(view.contentHtml) }} />
-            </main>
+            <main className="play-area">
+                <article className="scene-card">
+                    <header className="scene-header">
+                        {view.title && <h1><RichText html={view.title} /></h1>}
+                        {view.subtitle && <p className="scene-subtitle"><RichText html={view.subtitle} /></p>}
+                    </header>
 
-            <section className="choices" style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                {view.visibleChoices.map((choice) => (
-                    <button
-                        key={choice.id}
-                        onClick={() => void chooseChoice(choice.id)}
-                        style={{
-                            padding: '1rem',
-                            textAlign: 'left',
-                            fontSize: '1em',
-                            cursor: 'pointer',
-                            backgroundColor: '#f0f0f0',
-                            border: '1px solid #ccc',
-                            borderRadius: '4px'
-                        }}
-                    >
-                        {choice.text}
-                    </button>
-                ))}
-                {view.visibleChoices.length === 0 && <p>No choices available.</p>}
-            </section>
+                    <section className="scene-content">
+                        <RichText html={view.contentHtml} />
+                    </section>
+                </article>
 
-            <footer style={{ marginTop: '4rem', borderTop: '1px solid #eee', paddingTop: '1rem', color: '#999', fontSize: '0.8em' }}>
-                <p>Scene: <code>{view.sceneId}</code> | Time: {view.time.year}-{view.time.month}</p>
-                <p>Session Adapter: <code>{view.adapterKind}</code> | Saved Session: {hasPersistedSession ? 'yes' : 'no'}</p>
-                <details>
+                <section className="choice-dock" aria-label="Choices">
+                    {view.visibleChoices.map((choice) => (
+                        <button
+                            key={choice.id}
+                            className="choice-button"
+                            data-choice-id={choice.id}
+                            onClick={() => void chooseChoice(choice.id)}
+                        >
+                            <RichText html={choice.text} />
+                        </button>
+                    ))}
+                    {view.visibleChoices.length === 0 && <p className="empty-choices">No choices available.</p>}
+                </section>
+
+                <details className="debug-panel">
                     <summary>Debug State</summary>
                     <pre>{JSON.stringify(view.debugFlags, null, 2)}</pre>
                 </details>
-            </footer>
+            </main>
         </div>
     );
 }

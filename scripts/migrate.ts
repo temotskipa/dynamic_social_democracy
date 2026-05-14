@@ -4,7 +4,12 @@ import * as path from 'path';
 // --- Configuration ---
 
 const SOURCE_DIR = 'source/scenes';
-const OUT_DIR = 'apps/web/src/content/scenes';
+const OUT_DIR = 'out/legacy-scenes';
+const CONTENT_OUT = 'apps/web/src/content/generated/legacy-content.json';
+if (process.argv.includes('--typescript')) {
+    throw new Error('Legacy TypeScript scene output has been removed from the canonical migration path. Use JSON content output.');
+}
+const OUTPUT_MODE: 'json' | 'typescript' = 'json';
 
 // Files to keep separate (Basenames without extension)
 const SEPARATE_FILES = new Set([
@@ -21,6 +26,7 @@ interface DryScene {
     viewIf?: string;
     onArrival?: string;
     onDisplay?: string;
+    goTo?: string;
     tags?: string[];
     content: string[];
     choices: DryChoice[];
@@ -33,6 +39,50 @@ interface DryChoice {
     type: 'goto' | 'jump';
     viewIf?: string;
     onChoose?: string;
+}
+
+interface MechanicsRef {
+    id: string;
+    params?: Record<string, unknown>;
+}
+
+interface FlagPatchOperation {
+    op: 'set' | 'add';
+    key: string;
+    value?: string | number | boolean;
+    from?: string;
+}
+
+interface FlagCompareCondition {
+    key: string;
+    operator: 'truthy' | 'falsy' | '==' | '!=' | '>=' | '<=' | '>' | '<';
+    value?: string | number | boolean;
+    from?: string;
+}
+
+type ExpressionAst =
+    | { type: 'literal'; value: string | number | boolean | null }
+    | { type: 'flag'; key: string }
+    | { type: 'unary'; operator: '!' | '-'; expression: ExpressionAst }
+    | { type: 'binary'; operator: string; left: ExpressionAst; right: ExpressionAst };
+
+interface ContentSceneRecord {
+    id: string;
+    titleHtml: string;
+    subtitleHtml?: string | null;
+    bodyHtml: string;
+    conditions?: MechanicsRef[];
+    onArrival?: MechanicsRef[];
+    onDisplay?: MechanicsRef[];
+    choices: Array<{
+        id: string;
+        labelHtml: string;
+        nextSceneId: string | null;
+        conditions?: MechanicsRef[];
+        effects?: MechanicsRef[];
+    }>;
+    tags?: string[];
+    sourcePath?: string;
 }
 
 type TokenType = 'identifier' | 'keyword' | 'number' | 'string' | 'operator' | 'punctuation' | 'whitespace' | 'comment';
@@ -407,6 +457,7 @@ function parseBuffer(lines: string[], scene: DryScene) {
             else if (key === 'view-if') { scene.viewIf = content; currentField = 'viewIf'; }
             else if (key === 'on-arrival') { scene.onArrival = content; currentField = 'onArrival'; }
             else if (key === 'on-display') { scene.onDisplay = content; currentField = 'onDisplay'; }
+            else if (key === 'go-to') { scene.goTo = content; currentField = 'goTo'; }
             else if (key === 'tags') { scene.tags = content.split(',').map(s => s.trim()); currentField = 'tags'; }
             continue;
         }
@@ -498,9 +549,599 @@ export const ${varName}: Scene = {
 };`;
 }
 
+function formatScript(ts: string): string {
+    if (!ts || !ts.trim()) return '';
+    let result = ts.trim();
+    if (!result.endsWith(';') && !result.endsWith('}')) result += ';';
+    return result;
+}
+
+function splitScriptStatements(code: string): string[] {
+    return code
+        .split(';')
+        .map((statement) => statement.trim())
+        .filter(Boolean);
+}
+
+function parseLiteral(value: string): string | number | boolean | undefined {
+    const trimmed = value.trim();
+    if (trimmed === 'true') return true;
+    if (trimmed === 'false') return false;
+    if (/^-?\d+(?:\.\d+)?$/.test(trimmed)) return Number(trimmed);
+    if (/^"[^"]*"$/.test(trimmed)) return JSON.parse(trimmed);
+    if (/^'[^']*'$/.test(trimmed)) {
+        return trimmed.slice(1, -1).replace(/\\'/g, "'").replace(/\\\\/g, '\\');
+    }
+
+    return undefined;
+}
+
+function parseSimpleFlagPatch(code: string): FlagPatchOperation[] | undefined {
+    const statements = splitScriptStatements(code);
+    if (statements.length === 0) {
+        return undefined;
+    }
+
+    const operations: FlagPatchOperation[] = [];
+    for (const statement of statements) {
+        const match = statement.match(/^state\.flags\['([a-zA-Z0-9_]+)'\]\s*(=|\+=|-=)\s*(.+)$/);
+        if (!match) {
+            return undefined;
+        }
+
+        const [, key, operator, rawValue] = match;
+        const flagReference = rawValue.match(/^state\.flags\['([a-zA-Z0-9_]+)'\]$/);
+        if (operator === '=' && flagReference) {
+            operations.push({
+                op: 'set',
+                key,
+                from: flagReference[1],
+            });
+            continue;
+        }
+
+        const value = parseLiteral(rawValue);
+        if (value === undefined) {
+            return undefined;
+        }
+
+        if (operator === '=') {
+            operations.push({
+                op: 'set',
+                key,
+                value,
+            });
+            continue;
+        }
+
+        if (typeof value !== 'number') {
+            return undefined;
+        }
+
+        operations.push({
+            op: 'add',
+            key,
+            value: operator === '+=' ? value : -value,
+        });
+    }
+
+    return operations;
+}
+
+function stripOuterParentheses(code: string): string {
+    let trimmed = code.trim();
+    while (trimmed.startsWith('(') && trimmed.endsWith(')')) {
+        let depth = 0;
+        let enclosesEntireExpression = true;
+
+        for (let index = 0; index < trimmed.length; index += 1) {
+            const char = trimmed[index];
+            if (char === '(') depth += 1;
+            if (char === ')') depth -= 1;
+            if (depth === 0 && index < trimmed.length - 1) {
+                enclosesEntireExpression = false;
+                break;
+            }
+        }
+
+        if (!enclosesEntireExpression) {
+            break;
+        }
+
+        trimmed = trimmed.slice(1, -1).trim();
+    }
+
+    return trimmed;
+}
+
+function splitTopLevelAnd(code: string): string[] | undefined {
+    const parts: string[] = [];
+    let depth = 0;
+    let quote: string | null = null;
+    let start = 0;
+
+    for (let index = 0; index < code.length; index += 1) {
+        const char = code[index];
+        if (quote) {
+            if (char === '\\') {
+                index += 1;
+                continue;
+            }
+            if (char === quote) quote = null;
+            continue;
+        }
+
+        if (char === '"' || char === "'") {
+            quote = char;
+            continue;
+        }
+
+        if (char === '(') depth += 1;
+        if (char === ')') depth -= 1;
+        if (depth === 0 && code.slice(index, index + 2) === '&&') {
+            parts.push(code.slice(start, index).trim());
+            index += 1;
+            start = index + 1;
+        }
+    }
+
+    if (parts.length === 0) {
+        return undefined;
+    }
+
+    parts.push(code.slice(start).trim());
+    return parts;
+}
+
+function parseSimpleFlagCondition(code: string): FlagCompareCondition | undefined {
+    const trimmed = stripOuterParentheses(code);
+    const truthyMatch = trimmed.match(/^state\.flags\['([a-zA-Z0-9_]+)'\]$/);
+    if (truthyMatch) {
+        return {
+            key: truthyMatch[1],
+            operator: 'truthy',
+        };
+    }
+
+    const falsyMatch = trimmed.match(/^!\s*state\.flags\['([a-zA-Z0-9_]+)'\]$/);
+    if (falsyMatch) {
+        return {
+            key: falsyMatch[1],
+            operator: 'falsy',
+        };
+    }
+
+    const compareMatch = trimmed.match(/^state\.flags\['([a-zA-Z0-9_]+)'\]\s*(==|!=|>=|<=|>|<)\s*(.+)$/);
+    if (!compareMatch) {
+        return undefined;
+    }
+
+    const [, key, operator, rawValue] = compareMatch;
+    const flagReference = rawValue.match(/^state\.flags\['([a-zA-Z0-9_]+)'\]$/);
+    if (flagReference) {
+        return {
+            key,
+            operator: operator as FlagCompareCondition['operator'],
+            from: flagReference[1],
+        };
+    }
+
+    const value = parseLiteral(rawValue);
+    if (value === undefined) {
+        return undefined;
+    }
+
+    return {
+        key,
+        operator: operator as FlagCompareCondition['operator'],
+        value,
+    };
+}
+
+class ExpressionAstParser {
+    private index = 0;
+
+    constructor(private readonly tokens: Token[]) {}
+
+    parse(): ExpressionAst | undefined {
+        const expression = this.parseLogicalOr();
+        if (!expression || this.index < this.tokens.length) {
+            return undefined;
+        }
+
+        return expression;
+    }
+
+    private peek(): Token | undefined {
+        return this.tokens[this.index];
+    }
+
+    private match(...values: string[]): string | undefined {
+        const token = this.peek();
+        if (!token || !values.includes(token.value)) {
+            return undefined;
+        }
+
+        this.index += 1;
+        return token.value;
+    }
+
+    private parseLogicalOr(): ExpressionAst | undefined {
+        let expression = this.parseLogicalAnd();
+        while (expression) {
+            const operator = this.match('||');
+            if (!operator) break;
+            const right = this.parseLogicalAnd();
+            if (!right) return undefined;
+            expression = { type: 'binary', operator, left: expression, right };
+        }
+
+        return expression;
+    }
+
+    private parseLogicalAnd(): ExpressionAst | undefined {
+        let expression = this.parseComparison();
+        while (expression) {
+            const operator = this.match('&&');
+            if (!operator) break;
+            const right = this.parseComparison();
+            if (!right) return undefined;
+            expression = { type: 'binary', operator, left: expression, right };
+        }
+
+        return expression;
+    }
+
+    private parseComparison(): ExpressionAst | undefined {
+        let expression = this.parseAdditive();
+        while (expression) {
+            const operator = this.match('==', '!=', '===', '!==', '>=', '<=', '>', '<');
+            if (!operator) break;
+            const right = this.parseAdditive();
+            if (!right) return undefined;
+            expression = { type: 'binary', operator, left: expression, right };
+        }
+
+        return expression;
+    }
+
+    private parseAdditive(): ExpressionAst | undefined {
+        let expression = this.parseMultiplicative();
+        while (expression) {
+            const operator = this.match('+', '-');
+            if (!operator) break;
+            const right = this.parseMultiplicative();
+            if (!right) return undefined;
+            expression = { type: 'binary', operator, left: expression, right };
+        }
+
+        return expression;
+    }
+
+    private parseMultiplicative(): ExpressionAst | undefined {
+        let expression = this.parseUnary();
+        while (expression) {
+            const operator = this.match('*', '/', '%');
+            if (!operator) break;
+            const right = this.parseUnary();
+            if (!right) return undefined;
+            expression = { type: 'binary', operator, left: expression, right };
+        }
+
+        return expression;
+    }
+
+    private parseUnary(): ExpressionAst | undefined {
+        const operator = this.match('!', '-');
+        if (operator) {
+            const expression = this.parseUnary();
+            if (!expression) return undefined;
+            return { type: 'unary', operator: operator as '!' | '-', expression };
+        }
+
+        return this.parsePrimary();
+    }
+
+    private parsePrimary(): ExpressionAst | undefined {
+        if (this.match('(')) {
+            const expression = this.parseLogicalOr();
+            if (!expression || !this.match(')')) {
+                return undefined;
+            }
+
+            return expression;
+        }
+
+        const flagReference = this.parseFlagReference();
+        if (flagReference) {
+            return flagReference;
+        }
+
+        const token = this.peek();
+        if (!token) {
+            return undefined;
+        }
+
+        if (token.type === 'number') {
+            this.index += 1;
+            return { type: 'literal', value: Number(token.value) };
+        }
+
+        if (token.type === 'string') {
+            this.index += 1;
+            const value = parseLiteral(token.value);
+            if (typeof value === 'string') {
+                return { type: 'literal', value };
+            }
+
+            return undefined;
+        }
+
+        if (token.value === 'true' || token.value === 'false') {
+            this.index += 1;
+            return { type: 'literal', value: token.value === 'true' };
+        }
+
+        if (token.value === 'null') {
+            this.index += 1;
+            return { type: 'literal', value: null };
+        }
+
+        return undefined;
+    }
+
+    private parseFlagReference(): ExpressionAst | undefined {
+        const startIndex = this.index;
+        if (!this.match('state') || !this.match('.') || !this.match('flags') || !this.match('[')) {
+            this.index = startIndex;
+            return undefined;
+        }
+
+        const keyToken = this.peek();
+        if (!keyToken || keyToken.type !== 'string') {
+            this.index = startIndex;
+            return undefined;
+        }
+        this.index += 1;
+
+        if (!this.match(']')) {
+            this.index = startIndex;
+            return undefined;
+        }
+
+        const key = parseLiteral(keyToken.value);
+        if (typeof key !== 'string') {
+            this.index = startIndex;
+            return undefined;
+        }
+
+        return { type: 'flag', key };
+    }
+}
+
+function parseExpressionAst(code: string): ExpressionAst | undefined {
+    const tokens = Transpiler.tokenize(code).filter((token) => token.type !== 'whitespace' && token.type !== 'comment');
+    return new ExpressionAstParser(tokens).parse();
+}
+
+function legacyConditionRef(code?: string): MechanicsRef[] | undefined {
+    if (!code || !code.trim()) return undefined;
+    const transpiledCode = Transpiler.transpile(code, 'condition');
+    const comparison = parseSimpleFlagCondition(transpiledCode);
+    if (comparison) {
+        return [{
+            id: 'flags.compare',
+            params: comparison,
+        }];
+    }
+
+    const andParts = splitTopLevelAnd(transpiledCode);
+    if (andParts) {
+        const comparisons = andParts.map((part) => parseSimpleFlagCondition(part));
+        if (comparisons.every((part): part is FlagCompareCondition => Boolean(part))) {
+            return comparisons.map((part) => ({
+                id: 'flags.compare',
+                params: part,
+            }));
+        }
+    }
+
+    const ast = parseExpressionAst(transpiledCode);
+    if (ast) {
+        return [{
+            id: 'flags.expression',
+            params: {
+                ast,
+            },
+        }];
+    }
+
+    return [{
+        id: 'legacy.expression',
+        params: {
+            code: transpiledCode,
+            source: code,
+        },
+    }];
+}
+
+function legacyEffectRef(code?: string): MechanicsRef[] | undefined {
+    if (!code || !code.trim()) return undefined;
+    const transpiledCode = formatScript(Transpiler.transpile(code, 'script'));
+    const operations = parseSimpleFlagPatch(transpiledCode);
+    if (operations) {
+        return [{
+            id: 'flags.patch',
+            params: {
+                operations,
+            },
+        }];
+    }
+
+    return [{
+        id: 'legacy.script',
+        params: {
+            code: transpiledCode,
+            source: code,
+        },
+    }];
+}
+
+function normalizeTargetId(targetId: string): string {
+    return targetId.trim().replace(/^(@|#)/, '');
+}
+
+function legacyGoToRef(code?: string): MechanicsRef[] | undefined {
+    if (!code || !code.trim()) return undefined;
+
+    const routes = code
+        .split(';')
+        .map((route) => route.trim())
+        .filter(Boolean)
+        .map((route) => {
+            const match = route.match(/^(.+?)\s+if\s+(.+)$/);
+            if (!match) {
+                return {
+                    targetSceneId: normalizeTargetId(route),
+                    source: route,
+                };
+            }
+
+            return {
+                targetSceneId: normalizeTargetId(match[1]),
+                condition: Transpiler.transpile(match[2], 'condition'),
+                source: route,
+            };
+        });
+
+    return [{
+        id: 'legacy.goto',
+        params: {
+            routes,
+            source: code,
+        },
+    }];
+}
+
+function compactRefs(...refs: Array<MechanicsRef[] | undefined>): MechanicsRef[] | undefined {
+    const compactedRefs = refs.flatMap((ref) => ref ?? []);
+    return compactedRefs.length > 0 ? compactedRefs : undefined;
+}
+
+function compactRecord<T extends Record<string, unknown>>(record: T): T {
+    for (const key of Object.keys(record)) {
+        const value = record[key];
+        if (value === undefined || value === null) {
+            delete record[key];
+        }
+    }
+    return record;
+}
+
+function generateJsonScene(scene: DryScene, sourcePath: string, idOverride?: string): ContentSceneRecord {
+    return compactRecord({
+        id: idOverride ?? scene.id,
+        titleHtml: scene.title || scene.id,
+        subtitleHtml: scene.subtitle ?? null,
+        bodyHtml: scene.content.join('\n'),
+        conditions: legacyConditionRef(scene.viewIf),
+        onArrival: compactRefs(legacyEffectRef(scene.onArrival), legacyGoToRef(scene.goTo)),
+        onDisplay: legacyEffectRef(scene.onDisplay),
+        choices: scene.choices.map((choice) => compactRecord({
+            id: choice.targetId,
+            labelHtml: choice.text || choice.targetId,
+            nextSceneId: choice.targetId,
+            conditions: legacyConditionRef(choice.viewIf),
+            effects: legacyEffectRef(choice.onChoose),
+        })),
+        tags: scene.tags,
+        sourcePath: sourcePath.replace(/\\/g, '/'),
+    });
+}
+
+function walkFiles(dir: string, predicate: (filePath: string) => boolean): string[] {
+    if (!fs.existsSync(dir)) {
+        return [];
+    }
+
+    const results: string[] = [];
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const entryPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+            results.push(...walkFiles(entryPath, predicate));
+            continue;
+        }
+
+        if (entry.isFile() && predicate(entryPath)) {
+            results.push(entryPath);
+        }
+    }
+
+    return results.sort((left, right) => left.localeCompare(right));
+}
+
+function sleepSync(milliseconds: number): void {
+    const deadline = Date.now() + milliseconds;
+    while (Date.now() < deadline) {
+        // Keep the migration script dependency-free and synchronous.
+    }
+}
+
+function writeTextFileWithRetry(filePath: string, content: string): void {
+    const attempts = 5;
+    for (let attempt = 0; attempt < attempts; attempt++) {
+        try {
+            fs.writeFileSync(filePath, content);
+            return;
+        } catch (error) {
+            if (attempt === attempts - 1) {
+                throw error;
+            }
+
+            sleepSync(75 * (attempt + 1));
+        }
+    }
+}
+
+function collectQDisplays() {
+    return Object.fromEntries(
+        walkFiles('source/qdisplays', (filePath) => filePath.endsWith('.qdisplay.dry')).map((filePath) => {
+            const id = path.basename(filePath, '.qdisplay.dry');
+            return [id, {
+                id,
+                sourcePath: filePath.replace(/\\/g, '/'),
+                body: fs.readFileSync(filePath, 'utf-8'),
+            }];
+        }),
+    );
+}
+
+function collectAssetReferences(scenes: Record<string, ContentSceneRecord>): string[] {
+    const references = new Set<string>();
+    const assetPattern = /(?:src=["']|href=["']|\b)(img\/[^"'\s)<>]+|audio\/[^"'\s)<>]+|css\/[^"'\s)<>]+)/g;
+
+    for (const scene of Object.values(scenes)) {
+        const fields = [
+            scene.titleHtml,
+            scene.subtitleHtml ?? '',
+            scene.bodyHtml,
+            ...scene.choices.map((choice) => choice.labelHtml),
+        ];
+
+        for (const field of fields) {
+            for (const match of field.matchAll(assetPattern)) {
+                references.add(match[1]);
+            }
+        }
+    }
+
+    return Array.from(references).sort((left, right) => left.localeCompare(right));
+}
+
 // --- Main ---
 
 const collectedScenes: { id: string; varName: string; importPath: string }[] = [];
+const contentScenes: Record<string, ContentSceneRecord> = {};
 const buckets: Record<string, string[]> = {};
 const bucketVarNames: Record<string, Set<string>> = {};
 
@@ -538,24 +1179,36 @@ function processDir(dir: string, category: string = 'misc') {
             try {
                 const scenes = parseFile(fullPath);
                 for (const scene of scenes) {
-                    const varName = getUniqueVarName(targetBucket, scene.id);
-                    const snippet = generateTsSnippet(scene, varName);
-                    addToBucket(targetBucket, snippet);
-                    collectedScenes.push({
-                        id: scene.id,
-                        varName: varName,
-                        importPath: `./${targetBucket}`
-                    });
+                    if (OUTPUT_MODE === 'json') {
+                        contentScenes[scene.id] = generateJsonScene(scene, fullPath);
+                    } else {
+                        const varName = getUniqueVarName(targetBucket, scene.id);
+                        const snippet = generateTsSnippet(scene, varName);
+                        addToBucket(targetBucket, snippet);
+                        collectedScenes.push({
+                            id: scene.id,
+                            varName: varName,
+                            importPath: `./${targetBucket}`
+                        });
+                    }
                     if (scene.sections) {
                         for (const sub of scene.sections) {
-                            const subVarName = getUniqueVarName(targetBucket, sub.id);
-                            const subSnippet = generateTsSnippet(sub, subVarName);
-                            addToBucket(targetBucket, subSnippet);
-                            collectedScenes.push({
-                                id: sub.id,
-                                varName: subVarName,
-                                importPath: `./${targetBucket}`
-                            });
+                            if (OUTPUT_MODE === 'json') {
+                                contentScenes[sub.id] = generateJsonScene(sub, fullPath);
+                                const qualifiedSubId = `${scene.id}.${sub.id}`;
+                                if (!contentScenes[qualifiedSubId]) {
+                                    contentScenes[qualifiedSubId] = generateJsonScene(sub, fullPath, qualifiedSubId);
+                                }
+                            } else {
+                                const subVarName = getUniqueVarName(targetBucket, sub.id);
+                                const subSnippet = generateTsSnippet(sub, subVarName);
+                                addToBucket(targetBucket, subSnippet);
+                                collectedScenes.push({
+                                    id: sub.id,
+                                    varName: subVarName,
+                                    importPath: `./${targetBucket}`
+                                });
+                            }
                         }
                     }
                 }
@@ -566,39 +1219,65 @@ function processDir(dir: string, category: string = 'misc') {
     }
 }
 
-if (!fs.existsSync(OUT_DIR)) {
-    fs.mkdirSync(OUT_DIR, { recursive: true });
-}
-
 console.log('Scanning source/scenes...');
 processDir(SOURCE_DIR);
 
-console.log(`Writing consolidated files to ${OUT_DIR}...`);
+if (OUTPUT_MODE === 'json') {
+    const contentBundle = {
+        metadata: {
+            id: 'legacy-json-content',
+            title: 'Dynamic Social Democracy',
+            version: '0.11.1',
+            sourceFormat: 'dry',
+            generatedAt: new Date(0).toISOString(),
+        },
+        scenes: Object.fromEntries(Object.entries(contentScenes).sort(([left], [right]) => left.localeCompare(right))),
+        qdisplays: collectQDisplays(),
+        assets: {
+            references: collectAssetReferences(contentScenes),
+        },
+        mechanics: {
+            conditions: ['flags.compare', 'legacy.expression'],
+        effects: ['flags.patch', 'legacy.script', 'legacy.goto'],
+        },
+        initialSceneId: 'start_menu_2',
+    };
 
-for (const [bucketName, contents] of Object.entries(buckets)) {
-    const outPath = path.join(OUT_DIR, `${bucketName}.ts`);
-    const header = `import { Scene, GameState } from "../../engine/types";\n\n`;
-    const fileContent = header + contents.join('\n');
-    fs.writeFileSync(outPath, fileContent);
-}
+    fs.mkdirSync(path.dirname(CONTENT_OUT), { recursive: true });
+    writeTextFileWithRetry(CONTENT_OUT, `${JSON.stringify(contentBundle, null, 2)}\n`);
+    console.log(`Wrote typed JSON content bundle to ${CONTENT_OUT}.`);
+} else {
+    if (!fs.existsSync(OUT_DIR)) {
+        fs.mkdirSync(OUT_DIR, { recursive: true });
+    }
 
-const indexLines = [`import { Scene } from "../../engine/types";`];
-const distinctModules = Array.from(new Set(collectedScenes.map(s => s.importPath)));
-for (const modPath of distinctModules) {
-    const modName = '_' + path.basename(modPath).replace(/[^a-zA-Z0-9_]/g, '_');
-    indexLines.push(`import * as ${modName} from "${modPath}";`);
+    console.log(`Writing consolidated files to ${OUT_DIR}...`);
+
+    for (const [bucketName, contents] of Object.entries(buckets)) {
+        const outPath = path.join(OUT_DIR, `${bucketName}.ts`);
+        const header = `import { Scene, GameState } from "../../engine/types";\n\n`;
+        const fileContent = header + contents.join('\n');
+        fs.writeFileSync(outPath, fileContent);
+    }
+
+    const indexLines = [`import { Scene } from "../../engine/types";`];
+    const distinctModules = Array.from(new Set(collectedScenes.map(s => s.importPath)));
+    for (const modPath of distinctModules) {
+        const modName = '_' + path.basename(modPath).replace(/[^a-zA-Z0-9_]/g, '_');
+        indexLines.push(`import * as ${modName} from "${modPath}";`);
+    }
+    indexLines.push(`\nexport const allScenes: Record<string, Scene> = {};`);
+    indexLines.push(`\nconst register = (mod: any) => {`);
+    indexLines.push(`  Object.values(mod).forEach((scene: any) => {`);
+    indexLines.push(`    if(scene && scene.id) {`);
+    indexLines.push(`       allScenes[scene.id] = scene;`);
+    indexLines.push(`    }`);
+    indexLines.push(`  });`);
+    indexLines.push(`};`);
+    for (const modPath of distinctModules) {
+        const modName = '_' + path.basename(modPath).replace(/[^a-zA-Z0-9_]/g, '_');
+        indexLines.push(`register(${modName});`);
+    }
+    fs.writeFileSync(path.join(OUT_DIR, 'index.ts'), indexLines.join('\n'));
+    console.log('Migration Complete.');
 }
-indexLines.push(`\nexport const allScenes: Record<string, Scene> = {};`);
-indexLines.push(`\nconst register = (mod: any) => {`);
-indexLines.push(`  Object.values(mod).forEach((scene: any) => {`);
-indexLines.push(`    if(scene && scene.id) {`);
-indexLines.push(`       allScenes[scene.id] = scene;`);
-indexLines.push(`    }`);
-indexLines.push(`  });`);
-indexLines.push(`};`);
-for (const modPath of distinctModules) {
-    const modName = '_' + path.basename(modPath).replace(/[^a-zA-Z0-9_]/g, '_');
-    indexLines.push(`register(${modName});`);
-}
-fs.writeFileSync(path.join(OUT_DIR, 'index.ts'), indexLines.join('\n'));
-console.log('Migration Complete.');

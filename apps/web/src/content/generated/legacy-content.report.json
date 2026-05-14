@@ -1,0 +1,18 @@
+{
+  "bundleId": "legacy-json-content",
+  "generatedAt": "1970-01-01T00:00:00.000Z",
+  "assetRoot": "apps/web/public",
+  "mechanicsUsage": {
+    "conditions": {
+      "flags.compare": 3001,
+      "legacy.expression": 410
+    },
+    "effects": {
+      "flags.patch": 1582,
+      "legacy.goto": 1615,
+      "legacy.script": 2066
+    }
+  },
+  "issueCount": 0,
+  "issues": []
+}

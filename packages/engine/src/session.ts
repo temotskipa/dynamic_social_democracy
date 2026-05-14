@@ -8,10 +8,14 @@ import type {
   SessionChoiceSnapshot,
   SessionSnapshot,
 } from "@dsd/contracts";
-import { LogicInterpreter } from "./logic";
-import { cloneGameState, createInitialState, mutateGameSession } from "./state";
+import { LogicInterpreter } from "./logic.ts";
+import { cloneGameState, createInitialState, mutateGameSession } from "./state.ts";
 
-export const SESSION_SCHEMA_VERSION = 1;
+export const SESSION_SCHEMA_VERSION = 2;
+const LEGACY_BUNDLE_IDS_BY_VERSION: Record<number, string[]> = {
+  1: ["legacy-generated-scenes"],
+};
+const MAX_HISTORY_LENGTH = 100;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -42,6 +46,14 @@ function mergeState(seedState?: Partial<GameState>): GameState {
     history: seedState?.history ? [...seedState.history] : [...baseState.history],
     currentSceneId: seedState?.currentSceneId ?? baseState.currentSceneId,
   };
+}
+
+function formatBundleText(
+  bundle: GameBundle,
+  text: string,
+  state: Readonly<GameState>,
+): string {
+  return bundle.formatText?.(text, state) ?? LogicInterpreter.processText(text, state as GameState);
 }
 
 export function resolveInitialSceneId(bundle: GameBundle, state: Readonly<GameState>): string {
@@ -80,11 +92,16 @@ export function deserializeSession(
     return null;
   }
 
-  if (parsedSession.version !== SESSION_SCHEMA_VERSION) {
+  if (parsedSession.version !== 1 && parsedSession.version !== SESSION_SCHEMA_VERSION) {
     return null;
   }
 
-  if (parsedSession.bundleId !== bundle.id || !isRecord(parsedSession.state)) {
+  const version = Number(parsedSession.version);
+  const legacyBundleIds = LEGACY_BUNDLE_IDS_BY_VERSION[version] ?? [];
+  const isCompatibleBundle =
+    parsedSession.bundleId === bundle.id || legacyBundleIds.includes(String(parsedSession.bundleId));
+
+  if (!isCompatibleBundle || !isRecord(parsedSession.state)) {
     return null;
   }
 
@@ -111,8 +128,11 @@ export function getCurrentSceneId(
   bundle: GameBundle,
   session: Readonly<GameSession>,
 ): string {
-  if (session.state.currentSceneId && bundle.scenes[session.state.currentSceneId]) {
-    return session.state.currentSceneId;
+  const resolvedCurrentSceneId = session.state.currentSceneId
+    ? bundle.resolveSceneId?.(session.state.currentSceneId, session.state) ?? session.state.currentSceneId
+    : "";
+  if (resolvedCurrentSceneId && bundle.scenes[resolvedCurrentSceneId]) {
+    return resolvedCurrentSceneId;
   }
 
   const resolvedInitialSceneId = resolveInitialSceneId(bundle, session.state);
@@ -183,7 +203,7 @@ export function renderCurrentScene(
   }
 
   if (typeof scene.render === "string") {
-    return LogicInterpreter.processText(scene.render, session.state);
+    return formatBundleText(bundle, scene.render, session.state);
   }
 
   return scene.render(session.state);
@@ -199,8 +219,8 @@ export function createSessionSnapshot(
   return {
     sceneId: currentSceneId,
     currentSceneId,
-    title: scene?.title ?? currentSceneId,
-    subtitle: scene?.subtitle ?? null,
+    title: scene ? formatBundleText(bundle, scene.title, session.state) : currentSceneId,
+    subtitle: scene?.subtitle ? formatBundleText(bundle, scene.subtitle, session.state) : null,
     time: { ...session.state.time },
     visibleChoices: createChoiceSnapshots(bundle, session),
   };
@@ -246,10 +266,25 @@ export function applyChoice(
     return session as GameSession;
   }
 
+  const currentSceneId = getCurrentSceneId(bundle, session);
+
   return mutateGameSession(session as GameSession, (nextState) => {
     choice.onChoose?.(nextState);
+    if (choice.nextSceneId === "backSpecialScene") {
+      const previousSceneId = nextState.history.pop();
+      nextState.currentSceneId =
+        previousSceneId && bundle.scenes[previousSceneId]
+          ? previousSceneId
+          : resolveInitialSceneId(bundle, nextState);
+      return;
+    }
+
     if (choice.nextSceneId) {
-      nextState.currentSceneId = choice.nextSceneId;
+      const resolvedSceneId = bundle.resolveSceneId?.(choice.nextSceneId, nextState) ?? choice.nextSceneId;
+      if (resolvedSceneId !== currentSceneId && bundle.scenes[resolvedSceneId]) {
+        nextState.history = [...nextState.history, currentSceneId].slice(-MAX_HISTORY_LENGTH);
+      }
+      nextState.currentSceneId = resolvedSceneId;
     }
   });
 }

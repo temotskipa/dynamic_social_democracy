@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "start": "tsx src/index.ts",
+    "dev": "node --experimental-strip-types --watch --env-file-if-exists=.env src/index.ts",
+    "start": "node --experimental-strip-types --env-file-if-exists=.env src/index.ts",
     "build": "tsc --noEmit -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
@@ -14,8 +14,7 @@
     "socket.io": "^4.8.3"
   },
   "devDependencies": {
-    "@types/node": "^25.0.3",
-    "tsx": "^4.21.0",
+    "@types/node": "^25.8.0",
     "typescript": "^5.9.3"
   }
 }

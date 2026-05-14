@@ -1,6 +1,6 @@
 import { signal } from "@preact/signals";
 import { createLocalSessionAdapter } from "../session/localSessionAdapter";
-import type { SessionView } from "./types";
+import type { SessionView } from "@dsd/contracts";
 
 const sessionAdapter = createLocalSessionAdapter();
 const defaultSessionView = sessionAdapter.getView();

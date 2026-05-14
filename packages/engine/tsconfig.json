@@ -9,6 +9,7 @@
     "moduleResolution": "Node",
     "strict": true,
     "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
     "noEmit": true
   },
   "include": [

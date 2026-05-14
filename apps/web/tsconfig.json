@@ -16,6 +16,7 @@
         "module": "ESNext",
         "moduleResolution": "Node",
         "resolveJsonModule": true,
+        "allowImportingTsExtensions": true,
         "isolatedModules": true,
         "noEmit": true,
         "jsx": "react-jsx",
@@ -23,10 +24,5 @@
     },
     "include": [
         "src"
-    ],
-    "exclude": [
-        "src/content/scenes/ev.ts",
-        "src/content/scenes/events.ts",
-        "src/content/scenes/events.ts.tmp"
     ]
 }

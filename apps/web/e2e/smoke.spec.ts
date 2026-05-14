@@ -76,9 +76,9 @@ test("boots to the start menu, reaches credits, and returns back", async ({ page
     .poll(async () => {
       return (await readSnapshot(page)).sceneId;
     })
-    .toBe("root");
-  await expect(page.getByRole("heading", { name: "Root Scene" })).toBeVisible();
-  await expect(page.getByText("No choices available.")).toBeVisible();
+    .toBe("start_menu_2");
+  await expect(page.getByRole("heading", { name: "start_menu_2" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Start game" })).toBeVisible();
 
   expect(pageErrors).toEqual([]);
   expect(consoleErrors).toEqual([]);
@@ -95,9 +95,38 @@ test("can enter the start game flow", async ({ page }) => {
     .poll(async () => {
       return (await readSnapshot(page)).sceneId;
     })
-    .toBe("start_1");
-  await expect(page.getByText("No choices available.")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "start_1" })).toBeVisible();
+    .toBe("pls_player");
+  await expect(page.getByRole("heading", { name: "pls_player" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Mod Info - Last Updated 2026/01/25" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Mod Info - Last Updated 2026/01/25" }).click();
+  await expect
+    .poll(async () => {
+      return (await readSnapshot(page)).sceneId;
+    })
+    .toBe("modinfo.infotext");
+
+  await page.getByRole("button", { name: "Back" }).click();
+  await expect
+    .poll(async () => {
+      return (await readSnapshot(page)).sceneId;
+    })
+    .toBe("flavors");
+
+  await page.getByRole("button", { name: "Start game" }).click();
+  await expect
+    .poll(async () => {
+      return (await readSnapshot(page)).sceneId;
+    })
+    .toBe("root.start");
+  await expect(page.getByRole("button", { name: "Begin (dynamic mode)" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Begin (dynamic mode)" }).click();
+  await expect
+    .poll(async () => {
+      return (await readSnapshot(page)).sceneId;
+    })
+    .toBe("main.main_easy");
 
   expect(pageErrors).toEqual([]);
   expect(consoleErrors).toEqual([]);
@@ -130,7 +159,7 @@ test("can save, reload, restore, and reset a local session", async ({ page }) =>
     .poll(async () => {
       return (await readSnapshot(page)).sceneId;
     })
-    .toBe("root");
+    .toBe("start_menu_2");
 
   await page.getByRole("button", { name: "Load Session" }).click();
   await expect(page.getByRole("status")).toContainText("Saved session loaded.");

@@ -1,4 +1,4 @@
-import type { SessionAdapterKind, SessionView } from "../engine/types";
+import type { SessionAdapterKind, SessionView } from "@dsd/contracts";
 
 export interface SessionAdapter {
   readonly kind: SessionAdapterKind;

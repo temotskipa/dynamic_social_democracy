@@ -15,10 +15,11 @@ import type {
   GameBundle,
   GameSession,
   SessionView,
-} from "../engine/types";
+} from "@dsd/contracts";
 import type { SessionAdapter } from "./adapter";
 
 const SESSION_STORAGE_PREFIX = "dsd:session:";
+const LEGACY_SESSION_STORAGE_KEYS = ["dsd:session:legacy-generated-scenes"];
 const MAX_SCENE_EFFECT_PASSES = 25;
 
 function getStorage(): Storage | null {
@@ -37,6 +38,10 @@ function getSessionStorageKey(bundleId: string): string {
   return `${SESSION_STORAGE_PREFIX}${bundleId}`;
 }
 
+function getReadableSessionStorageKeys(bundleId: string): string[] {
+  return Array.from(new Set([getSessionStorageKey(bundleId), ...LEGACY_SESSION_STORAGE_KEYS]));
+}
+
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Unknown session persistence error.";
 }
@@ -45,6 +50,7 @@ export function createLocalSessionAdapter(
   bundle: GameBundle = legacyGameBundle,
 ): SessionAdapter {
   const storageKey = getSessionStorageKey(bundle.id);
+  const readableStorageKeys = getReadableSessionStorageKeys(bundle.id);
   const listeners = new Set<(view: SessionView) => void>();
 
   let currentSession = createSession(bundle);
@@ -77,20 +83,22 @@ export function createLocalSessionAdapter(
 
   async function refreshPersistedSessionFlag() {
     const storage = getStorage();
-    hasPersistedSession = Boolean(storage?.getItem(storageKey));
+    hasPersistedSession = Boolean(readableStorageKeys.some((key) => storage?.getItem(key)));
   }
 
   async function loadPersistedSession(): Promise<GameSession | null> {
     const storage = getStorage();
-    const persistedSession = storage?.getItem(storageKey);
+    const persistedSessionEntry = readableStorageKeys
+      .map((key) => ({ key, value: storage?.getItem(key) ?? null }))
+      .find((entry) => entry.value);
 
-    if (!persistedSession) {
+    if (!persistedSessionEntry?.value) {
       return null;
     }
 
-    const session = deserializeSession(bundle, persistedSession);
+    const session = deserializeSession(bundle, persistedSessionEntry.value);
     if (!session) {
-      storage?.removeItem(storageKey);
+      storage?.removeItem(persistedSessionEntry.key);
     }
 
     return session;
@@ -186,7 +194,9 @@ export function createLocalSessionAdapter(
       persistenceError = null;
 
       const storage = getStorage();
-      storage?.removeItem(storageKey);
+      for (const key of readableStorageKeys) {
+        storage?.removeItem(key);
+      }
       return hydrateSession(createSession(bundle));
     },
     subscribe(listener) {
