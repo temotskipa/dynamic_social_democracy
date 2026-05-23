@@ -76,6 +76,19 @@ test("accepts imported flag patch effects", () => {
   assert.deepEqual(validateContentBundle(bundle), []);
 });
 
+test("accepts imported legacy layout effects", () => {
+  const bundle = createBundle();
+  bundle.scenes.start.onArrival = [{
+    id: "ui.legacyLayout",
+    params: {
+      toolsWrapperDisplay: "block",
+      maxWidth: "540px",
+    },
+  }];
+
+  assert.deepEqual(validateContentBundle(bundle), []);
+});
+
 test("accepts imported flag compare conditions", () => {
   const bundle = createBundle();
   bundle.scenes.start.choices[0].conditions = [{
@@ -84,6 +97,28 @@ test("accepts imported flag compare conditions", () => {
       key: "started",
       operator: "==",
       value: 1,
+    },
+  }];
+
+  assert.deepEqual(validateContentBundle(bundle), []);
+});
+
+test("accepts imported flag expression conditions", () => {
+  const bundle = createBundle();
+  bundle.scenes.start.choices[0].conditions = [{
+    id: "flags.expression",
+    params: {
+      ast: {
+        type: "binary",
+        operator: "||",
+        left: { type: "flag", key: "cabinet_ready" },
+        right: {
+          type: "binary",
+          operator: ">=",
+          left: { type: "flag", key: "reform_votes" },
+          right: { type: "literal", value: 50 },
+        },
+      },
     },
   }];
 

@@ -5,6 +5,8 @@ export interface SessionAdapter {
   getView(): SessionView;
   initialize(): Promise<SessionView>;
   choose(choiceId: string): Promise<SessionView>;
+  goToScene(sceneIdOrTag: string): Promise<SessionView>;
+  goBack(): Promise<SessionView>;
   save(): Promise<SessionView>;
   load(): Promise<SessionView>;
   reset(): Promise<SessionView>;

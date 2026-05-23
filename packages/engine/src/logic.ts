@@ -308,6 +308,77 @@ function createLegacyGlobals(state: GameState) {
 }
 
 export class LogicInterpreter {
+  private static matchConditionalStart(text: string, index: number): number {
+    const match = text.slice(index).match(/^\[\?\s*if\b/i);
+    return match ? match[0].length : 0;
+  }
+
+  private static findConditionalHeaderEnd(text: string, index: number): number {
+    let quote: string | null = null;
+
+    for (let cursor = index; cursor < text.length; cursor++) {
+      const char = text[cursor];
+      if (quote) {
+        if (char === "\\" && cursor + 1 < text.length) {
+          cursor++;
+          continue;
+        }
+
+        if (char === quote) {
+          quote = null;
+        }
+        continue;
+      }
+
+      if (char === "\"" || char === "'") {
+        quote = char;
+        continue;
+      }
+
+      if (char === ":") {
+        return cursor;
+      }
+
+      if (text.startsWith("?]", cursor)) {
+        return -1;
+      }
+    }
+
+    return -1;
+  }
+
+  private static findConditionalClose(text: string, index: number): number {
+    let depth = 1;
+
+    for (let cursor = index; cursor < text.length; cursor++) {
+      const nestedStartLength = this.matchConditionalStart(text, cursor);
+      if (nestedStartLength > 0) {
+        depth++;
+        cursor += nestedStartLength - 1;
+        continue;
+      }
+
+      if (text.startsWith("?]", cursor)) {
+        depth--;
+        if (depth === 0) {
+          return cursor;
+        }
+
+        cursor++;
+      }
+    }
+
+    return -1;
+  }
+
+  private static normalizeConditionalExpression(condition: string): string {
+    return condition
+      .replace(/\band\b/g, "&&")
+      .replace(/\bor\b/g, "||")
+      .replace(/\bnot\b/g, "!")
+      .replace(/([^!<>=])=([^=])/g, "$1==$2");
+  }
+
   static evaluateExpression(code: string, state: GameState): unknown {
     if (!code || !code.trim()) {
       return true;
@@ -414,22 +485,46 @@ export class LogicInterpreter {
       return "";
     }
 
-    return text.replace(/\[\?\s*if\s*(.*?)\s*:\s*(.*?)\s*\?\]/gs, (_, condition, content) => {
+    let output = "";
+    for (let cursor = 0; cursor < text.length;) {
+      const startLength = this.matchConditionalStart(text, cursor);
+      if (startLength === 0) {
+        output += text[cursor];
+        cursor++;
+        continue;
+      }
+
+      const conditionStart = cursor + startLength;
+      const headerEnd = this.findConditionalHeaderEnd(text, conditionStart);
+      if (headerEnd < 0) {
+        output += text[cursor];
+        cursor++;
+        continue;
+      }
+
+      const contentStart = headerEnd + 1;
+      const closeStart = this.findConditionalClose(text, contentStart);
+      if (closeStart < 0) {
+        output += text[cursor];
+        cursor++;
+        continue;
+      }
+
+      const condition = text.slice(conditionStart, headerEnd).trim();
+      const content = text.slice(contentStart, closeStart);
       try {
-        let jsLogic = condition
-          .replace(/\band\b/g, "&&")
-          .replace(/\bor\b/g, "||")
-          .replace(/\bnot\b/g, "!");
-
-        jsLogic = jsLogic.replace(/([^!<>=])=([^=])/g, "$1==$2");
-
-        return this.evaluateCondition(jsLogic, state)
+        const jsLogic = this.normalizeConditionalExpression(condition);
+        output += this.evaluateCondition(jsLogic, state)
           ? this.parseConditionalText(content, state, qdisplayFormatters)
           : "";
       } catch {
-        return "";
+        output += "";
       }
-    });
+
+      cursor = closeStart + 2;
+    }
+
+    return output;
   }
 
   static processText(

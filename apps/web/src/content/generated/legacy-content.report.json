@@ -4,13 +4,14 @@
   "assetRoot": "apps/web/public",
   "mechanicsUsage": {
     "conditions": {
-      "flags.compare": 3001,
-      "legacy.expression": 410
+      "flags.compare": 3003,
+      "flags.expression": 411
     },
     "effects": {
-      "flags.patch": 1582,
-      "legacy.goto": 1615,
-      "legacy.script": 2066
+      "flags.patch": 3363,
+      "legacy.goto": 1598,
+      "legacy.script": 122,
+      "ui.legacyLayout": 40
     }
   },
   "issueCount": 0,

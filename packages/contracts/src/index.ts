@@ -53,6 +53,14 @@ export interface MechanicsRef {
 export type ConditionRef = MechanicsRef;
 export type EffectRef = MechanicsRef;
 
+export type SceneCardKind = "card" | "deck" | "hand" | "pinned-card";
+
+export interface SceneUiMetadata {
+  cardKind?: SceneCardKind;
+  cardImage?: string;
+  maxCards?: number;
+}
+
 export interface ChoiceRecord {
   id: string;
   labelHtml: string;
@@ -71,6 +79,7 @@ export interface SceneRecord {
   onDisplay?: EffectRef[];
   choices: ChoiceRecord[];
   tags?: string[];
+  ui?: SceneUiMetadata;
   sourcePath?: string;
 }
 
@@ -100,6 +109,23 @@ export interface SessionChoiceSnapshot {
   id: string;
   text: string;
   nextSceneId: string | null;
+  target?: SessionCardSnapshot | null;
+}
+
+export interface SessionCardSnapshot {
+  id: string;
+  title: string;
+  tags?: string[];
+  ui?: SceneUiMetadata;
+  choiceId?: string;
+}
+
+export interface SessionBoardSnapshot {
+  decks: SessionCardSnapshot[];
+  hand: SessionCardSnapshot[];
+  pinnedCards: SessionCardSnapshot[];
+  pinnedDescription?: string;
+  maxCards?: number;
 }
 
 export interface SessionSnapshot {
@@ -109,6 +135,7 @@ export interface SessionSnapshot {
   subtitle: string | null;
   time: GameTime;
   visibleChoices: SessionChoiceSnapshot[];
+  board?: SessionBoardSnapshot | null;
 }
 
 export type SessionAdapterKind = "local" | "remote";
@@ -143,6 +170,7 @@ export interface Scene {
   render: SceneContent;
   choices: ((state: GameState) => Choice[]) | Choice[];
   tags?: string[];
+  ui?: SceneUiMetadata;
 }
 
 export interface GameBundle {

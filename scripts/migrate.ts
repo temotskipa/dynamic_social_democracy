@@ -28,6 +28,12 @@ interface DryScene {
     onDisplay?: string;
     goTo?: string;
     tags?: string[];
+    isCard?: boolean;
+    isDeck?: boolean;
+    isHand?: boolean;
+    isPinnedCard?: boolean;
+    cardImage?: string;
+    maxCards?: number;
     content: string[];
     choices: DryChoice[];
     sections: DryScene[];
@@ -47,10 +53,12 @@ interface MechanicsRef {
 }
 
 interface FlagPatchOperation {
-    op: 'set' | 'add';
+    op: 'set' | 'add' | 'multiply' | 'arrayPush' | 'arrayRemove';
     key: string;
-    value?: string | number | boolean;
+    value?: StaticJsonValue;
+    valueExpression?: ExpressionAst;
     from?: string;
+    condition?: ExpressionAst;
 }
 
 interface FlagCompareCondition {
@@ -64,7 +72,11 @@ type ExpressionAst =
     | { type: 'literal'; value: string | number | boolean | null }
     | { type: 'flag'; key: string }
     | { type: 'unary'; operator: '!' | '-'; expression: ExpressionAst }
-    | { type: 'binary'; operator: string; left: ExpressionAst; right: ExpressionAst };
+    | { type: 'binary'; operator: string; left: ExpressionAst; right: ExpressionAst }
+    | { type: 'conditional'; condition: ExpressionAst; consequent: ExpressionAst; alternate: ExpressionAst }
+    | { type: 'call'; fn: 'floor' | 'round' | 'ceil' | 'roundTo' | 'fixed'; args: ExpressionAst[] };
+
+type StaticJsonValue = string | number | boolean | null | StaticJsonValue[] | { [key: string]: StaticJsonValue };
 
 interface ContentSceneRecord {
     id: string;
@@ -82,8 +94,15 @@ interface ContentSceneRecord {
         effects?: MechanicsRef[];
     }>;
     tags?: string[];
+    ui?: {
+        cardKind?: 'card' | 'deck' | 'hand' | 'pinned-card';
+        cardImage?: string;
+        maxCards?: number;
+    };
     sourcePath?: string;
 }
+
+type ContentCardKind = NonNullable<ContentSceneRecord['ui']>['cardKind'];
 
 type TokenType = 'identifier' | 'keyword' | 'number' | 'string' | 'operator' | 'punctuation' | 'whitespace' | 'comment';
 
@@ -459,6 +478,12 @@ function parseBuffer(lines: string[], scene: DryScene) {
             else if (key === 'on-display') { scene.onDisplay = content; currentField = 'onDisplay'; }
             else if (key === 'go-to') { scene.goTo = content; currentField = 'goTo'; }
             else if (key === 'tags') { scene.tags = content.split(',').map(s => s.trim()); currentField = 'tags'; }
+            else if (key === 'is-card') { scene.isCard = content.trim() !== 'false'; currentField = 'isCard'; }
+            else if (key === 'is-deck') { scene.isDeck = content.trim() !== 'false'; currentField = 'isDeck'; }
+            else if (key === 'is-hand') { scene.isHand = content.trim() !== 'false'; currentField = 'isHand'; }
+            else if (key === 'is-pinned-card') { scene.isPinnedCard = content.trim() !== 'false'; currentField = 'isPinnedCard'; }
+            else if (key === 'card-image') { scene.cardImage = content.trim(); currentField = 'cardImage'; }
+            else if (key === 'max-cards') { scene.maxCards = Number(content.trim()); currentField = 'maxCards'; }
             continue;
         }
 
@@ -557,10 +582,77 @@ function formatScript(ts: string): string {
 }
 
 function splitScriptStatements(code: string): string[] {
-    return code
-        .split(';')
-        .map((statement) => statement.trim())
-        .filter(Boolean);
+    const withoutComments = Transpiler.tokenize(code)
+        .filter((token) => token.type !== 'comment')
+        .map((token) => token.value)
+        .join('');
+
+    const statements: string[] = [];
+    let start = 0;
+    let parenDepth = 0;
+    let braceDepth = 0;
+    let bracketDepth = 0;
+    let quote: string | null = null;
+
+    for (let index = 0; index < withoutComments.length; index += 1) {
+        const char = withoutComments[index];
+        if (quote) {
+            if (char === '\\') {
+                index += 1;
+                continue;
+            }
+            if (char === quote) quote = null;
+            continue;
+        }
+
+        if (char === '"' || char === "'" || char === '`') {
+            quote = char;
+            continue;
+        }
+
+        if (char === '(') parenDepth += 1;
+        if (char === ')') parenDepth -= 1;
+        if (char === '{') braceDepth += 1;
+        if (char === '}') braceDepth -= 1;
+        if (char === '[') bracketDepth += 1;
+        if (char === ']') bracketDepth -= 1;
+
+        if (char === '}' && parenDepth === 0 && braceDepth === 0 && bracketDepth === 0) {
+            let nextIndex = index + 1;
+            while (/\s/.test(withoutComments[nextIndex] ?? '')) {
+                nextIndex += 1;
+            }
+
+            if (
+                nextIndex < withoutComments.length &&
+                withoutComments[nextIndex] !== ';' &&
+                withoutComments.slice(nextIndex, nextIndex + 4) !== 'else'
+            ) {
+                const statement = withoutComments.slice(start, index + 1).trim();
+                if (statement) {
+                    statements.push(statement);
+                }
+                start = nextIndex;
+                index = nextIndex - 1;
+                continue;
+            }
+        }
+
+        if ((char === ';' || char === '\n') && parenDepth === 0 && braceDepth === 0 && bracketDepth === 0) {
+            const statement = withoutComments.slice(start, index).trim();
+            if (statement) {
+                statements.push(statement);
+            }
+            start = index + 1;
+        }
+    }
+
+    const finalStatement = withoutComments.slice(start).trim();
+    if (finalStatement) {
+        statements.push(finalStatement);
+    }
+
+    return statements;
 }
 
 function parseLiteral(value: string): string | number | boolean | undefined {
@@ -576,6 +668,692 @@ function parseLiteral(value: string): string | number | boolean | undefined {
     return undefined;
 }
 
+function parseStaticJsonValue(value: string): StaticJsonValue | undefined {
+    const literal = parseLiteral(value);
+    if (literal !== undefined) {
+        return literal;
+    }
+
+    const trimmed = value.trim();
+    if (trimmed === 'null') {
+        return null;
+    }
+
+    if (!trimmed.startsWith('[') || !trimmed.endsWith(']')) {
+        return undefined;
+    }
+
+    const body = trimmed.slice(1, -1).trim();
+    if (!body) {
+        return [];
+    }
+
+    const values: StaticJsonValue[] = [];
+    let start = 0;
+    let quote: string | null = null;
+    for (let index = 0; index <= body.length; index += 1) {
+        const char = body[index];
+        if (quote) {
+            if (char === '\\') {
+                index += 1;
+                continue;
+            }
+            if (char === quote) quote = null;
+            continue;
+        }
+
+        if (char === '"' || char === "'") {
+            quote = char;
+            continue;
+        }
+
+        if (char === ',' || index === body.length) {
+            const item = body.slice(start, index).trim();
+            const parsed = parseStaticJsonValue(item);
+            if (parsed === undefined) {
+                return undefined;
+            }
+            values.push(parsed);
+            start = index + 1;
+        }
+    }
+
+    return values;
+}
+
+function parseFlagWriteTarget(statement: string): { key: string; operator: string; rawValue: string } | undefined {
+    const match = statement.match(/^(?:state\.flags\['([a-zA-Z0-9_]+)'\]|Q\.([a-zA-Z0-9_]+)|this\.state\.([a-zA-Z0-9_]+))\s*(=|\+=|-=|\*=|\/=)\s*(.+)$/);
+    if (!match) {
+        return undefined;
+    }
+
+    const [, stateKey, qKey, thisStateKey, operator, rawValue] = match;
+    return {
+        key: stateKey ?? qKey ?? thisStateKey,
+        operator,
+        rawValue,
+    };
+}
+
+function parseFlagReadTarget(value: string): string | undefined {
+    const match = value.match(/^(?:state\.flags\['([a-zA-Z0-9_]+)'\]|Q\.([a-zA-Z0-9_]+)|this\.state\.([a-zA-Z0-9_]+))$/);
+    return match?.[1] ?? match?.[2] ?? match?.[3];
+}
+
+function parseFlagListMutation(statement: string): FlagPatchOperation[] | undefined {
+    const targetPattern = String.raw`(?:state\.flags\['([a-zA-Z0-9_]+)'\]|Q\.([a-zA-Z0-9_]+)|this\.state\.([a-zA-Z0-9_]+))`;
+    const pushMatch = statement.match(new RegExp(`^${targetPattern}\\.push\\(([\\s\\S]+)\\)$`));
+    if (pushMatch) {
+        const value = parseStaticJsonValue(pushMatch[4]);
+        if (value === undefined) {
+            return undefined;
+        }
+
+        return [{
+            op: 'arrayPush',
+            key: pushMatch[1] ?? pushMatch[2] ?? pushMatch[3],
+            value,
+        }];
+    }
+
+    const filterMatch = statement.match(new RegExp(`^${targetPattern}\\s*=\\s*${targetPattern}\\.filter\\(\\s*([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*=>\\s*([\\s\\S]+)\\)$`));
+    if (!filterMatch) {
+        return undefined;
+    }
+
+    const leftKey = filterMatch[1] ?? filterMatch[2] ?? filterMatch[3];
+    const rightKey = filterMatch[4] ?? filterMatch[5] ?? filterMatch[6];
+    if (leftKey !== rightKey) {
+        return undefined;
+    }
+
+    const iterator = filterMatch[7];
+    const parts = filterMatch[8].split(/\s*&&\s*/);
+    const operations: FlagPatchOperation[] = [];
+    for (const part of parts) {
+        const removeMatch = part.match(new RegExp(`^${iterator}\\s*!==\\s*([\\s\\S]+)$`));
+        if (!removeMatch) {
+            return undefined;
+        }
+
+        const value = parseStaticJsonValue(removeMatch[1]);
+        if (value === undefined) {
+            return undefined;
+        }
+
+        operations.push({
+            op: 'arrayRemove',
+            key: leftKey,
+            value,
+        });
+    }
+
+    return operations;
+}
+
+function isNumericPatchValueExpressionAst(expression: ExpressionAst): boolean {
+    switch (expression.type) {
+        case 'literal':
+            return typeof expression.value === 'number';
+        case 'flag':
+            return true;
+        case 'unary':
+            return expression.operator === '-' && isNumericPatchValueExpressionAst(expression.expression);
+        case 'binary':
+            return (
+                ['+', '-', '*', '/', '%'].includes(expression.operator) &&
+                isNumericPatchValueExpressionAst(expression.left) &&
+                isNumericPatchValueExpressionAst(expression.right)
+            );
+        case 'conditional':
+            return (
+                isNumericPatchValueExpressionAst(expression.consequent) &&
+                isNumericPatchValueExpressionAst(expression.alternate)
+            );
+        case 'call':
+            if (expression.fn === 'fixed') {
+                return false;
+            }
+            return expression.args.every((argument) => isNumericPatchValueExpressionAst(argument));
+        default:
+            return false;
+    }
+}
+
+function negateExpression(expression: ExpressionAst): ExpressionAst {
+    return {
+        type: 'unary',
+        operator: '-',
+        expression,
+    };
+}
+
+function invertExpression(expression: ExpressionAst): ExpressionAst {
+    return {
+        type: 'binary',
+        operator: '/',
+        left: { type: 'literal', value: 1 },
+        right: expression,
+    };
+}
+
+function parsePatchValueExpression(
+    rawValue: string,
+    mode: 'set' | 'numeric',
+    localExpressions: ReadonlyMap<string, ExpressionAst> = new Map(),
+): ExpressionAst | undefined {
+    const expression = parseExpressionAst(rawValue, localExpressions);
+    if (!expression) {
+        return undefined;
+    }
+
+    if (mode === 'numeric' && !isNumericPatchValueExpressionAst(expression)) {
+        return undefined;
+    }
+
+    return expression;
+}
+
+function parseUnconditionalFlagPatchOperation(
+    statement: string,
+    localExpressions: ReadonlyMap<string, ExpressionAst> = new Map(),
+): FlagPatchOperation | undefined {
+    const normalizedStatement = statement.replace(/;$/, '').trim();
+    const achievementMatch = normalizedStatement.match(/^this\.achieve\(['"]([a-zA-Z0-9_]+)['"]\)$/);
+    if (achievementMatch) {
+        const achievementId = achievementMatch[1].startsWith('achievement_')
+            ? achievementMatch[1]
+            : `achievement_${achievementMatch[1]}`;
+        return {
+            op: 'set',
+            key: achievementId,
+            value: 1,
+        };
+    }
+
+    const target = parseFlagWriteTarget(normalizedStatement);
+    if (!target) {
+        return undefined;
+    }
+
+    const { key, operator, rawValue } = target;
+    const flagReference = parseFlagReadTarget(rawValue);
+    if (operator === '=' && flagReference) {
+        return {
+            op: 'set',
+            key,
+            from: flagReference,
+        };
+    }
+
+    const value = parseStaticJsonValue(rawValue);
+    if (value === undefined) {
+        const valueExpression = parsePatchValueExpression(rawValue, operator === '=' ? 'set' : 'numeric', localExpressions);
+        if (!valueExpression) {
+            return undefined;
+        }
+
+        if (operator === '=') {
+            return {
+                op: 'set',
+                key,
+                valueExpression,
+            };
+        }
+
+        if (operator === '+=' || operator === '-=') {
+            return {
+                op: 'add',
+                key,
+                valueExpression: operator === '+=' ? valueExpression : negateExpression(valueExpression),
+            };
+        }
+
+        return {
+            op: 'multiply',
+            key,
+            valueExpression: operator === '*=' ? valueExpression : invertExpression(valueExpression),
+        };
+    }
+
+    if (operator === '=') {
+        return {
+            op: 'set',
+            key,
+            value,
+        };
+    }
+
+    if (typeof value !== 'number') {
+        return undefined;
+    }
+
+    if (operator === '*=' || operator === '/=') {
+        return {
+            op: 'multiply',
+            key,
+            value: operator === '*=' ? value : 1 / value,
+        };
+    }
+
+    return {
+        op: 'add',
+        key,
+        value: operator === '+=' ? value : -value,
+    };
+}
+
+function applyConditionToOperations(
+    operations: FlagPatchOperation[],
+    condition: ExpressionAst,
+): FlagPatchOperation[] {
+    return operations.map((operation) => {
+        if (!operation.condition) {
+            return {
+                ...operation,
+                condition,
+            };
+        }
+
+        return {
+            ...operation,
+            condition: {
+                type: 'binary',
+                operator: '&&',
+                left: condition,
+                right: operation.condition,
+            },
+        };
+    });
+}
+
+function andExpressions(left: ExpressionAst, right: ExpressionAst): ExpressionAst {
+    return {
+        type: 'binary',
+        operator: '&&',
+        left,
+        right,
+    };
+}
+
+function orExpressions(left: ExpressionAst, right: ExpressionAst): ExpressionAst {
+    return {
+        type: 'binary',
+        operator: '||',
+        left,
+        right,
+    };
+}
+
+function notExpression(expression: ExpressionAst): ExpressionAst {
+    return {
+        type: 'unary',
+        operator: '!',
+        expression,
+    };
+}
+
+function parseParenthesizedCondition(code: string, startIndex: number): { condition: string; nextIndex: number } | undefined {
+    let index = startIndex;
+    while (/\s/.test(code[index] ?? '')) index += 1;
+    if (code[index] !== '(') {
+        return undefined;
+    }
+
+    let depth = 0;
+    let quote: string | null = null;
+    const conditionStart = index + 1;
+    for (; index < code.length; index += 1) {
+        const char = code[index];
+        if (quote) {
+            if (char === '\\') {
+                index += 1;
+                continue;
+            }
+            if (char === quote) quote = null;
+            continue;
+        }
+
+        if (char === '"' || char === "'" || char === '`') {
+            quote = char;
+            continue;
+        }
+
+        if (char === '(') depth += 1;
+        if (char === ')') {
+            depth -= 1;
+            if (depth === 0) {
+                return {
+                    condition: code.slice(conditionStart, index).trim(),
+                    nextIndex: index + 1,
+                };
+            }
+        }
+    }
+
+    return undefined;
+}
+
+function parseBracedBlock(code: string, startIndex: number): { body: string; nextIndex: number } | undefined {
+    let index = startIndex;
+    while (/\s/.test(code[index] ?? '')) index += 1;
+    if (code[index] !== '{') {
+        return undefined;
+    }
+
+    let depth = 0;
+    let quote: string | null = null;
+    const bodyStart = index + 1;
+    for (; index < code.length; index += 1) {
+        const char = code[index];
+        if (quote) {
+            if (char === '\\') {
+                index += 1;
+                continue;
+            }
+            if (char === quote) quote = null;
+            continue;
+        }
+
+        if (char === '"' || char === "'" || char === '`') {
+            quote = char;
+            continue;
+        }
+
+        if (char === '{') depth += 1;
+        if (char === '}') {
+            depth -= 1;
+            if (depth === 0) {
+                return {
+                    body: code.slice(bodyStart, index).trim(),
+                    nextIndex: index + 1,
+                };
+            }
+        }
+    }
+
+    return undefined;
+}
+
+function updateLocalExpression(
+    statement: string,
+    localExpressions: Map<string, ExpressionAst>,
+): boolean {
+    const declarationMatch = statement.match(/^(?:let|var|const)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=\s*([\s\S]+)$/);
+    if (declarationMatch) {
+        const expression = parseExpressionAst(declarationMatch[2], localExpressions);
+        if (!expression) {
+            return false;
+        }
+
+        localExpressions.set(declarationMatch[1], expression);
+        return true;
+    }
+
+    const assignmentMatch = statement.match(/^([a-zA-Z_$][a-zA-Z0-9_$]*)\s*(=|\+=|-=|\*=|\/=)\s*([\s\S]+)$/);
+    if (!assignmentMatch || !localExpressions.has(assignmentMatch[1])) {
+        return false;
+    }
+
+    const [, key, operator, rawValue] = assignmentMatch;
+    const valueExpression = parseExpressionAst(rawValue, localExpressions);
+    const currentExpression = localExpressions.get(key);
+    if (!valueExpression || !currentExpression) {
+        return false;
+    }
+
+    if (operator === '=') {
+        localExpressions.set(key, valueExpression);
+        return true;
+    }
+
+    const operatorMap: Record<string, string> = {
+        '+=': '+',
+        '-=': '-',
+        '*=': '*',
+        '/=': '/',
+    };
+
+    localExpressions.set(key, {
+        type: 'binary',
+        operator: operatorMap[operator],
+        left: currentExpression,
+        right: valueExpression,
+    });
+    return true;
+}
+
+function parseIfElseFlagPatchOperations(
+    statement: string,
+    previousBranchesCondition?: ExpressionAst,
+    localExpressions: ReadonlyMap<string, ExpressionAst> = new Map(),
+): FlagPatchOperation[] | undefined {
+    let index = 0;
+    while (/\s/.test(statement[index] ?? '')) index += 1;
+    if (!statement.startsWith('if', index)) {
+        return undefined;
+    }
+
+    const afterIf = index + 2;
+    if (/[a-zA-Z0-9_]/.test(statement[afterIf] ?? '')) {
+        return undefined;
+    }
+
+    const parsedCondition = parseParenthesizedCondition(statement, afterIf);
+    if (!parsedCondition) {
+        return undefined;
+    }
+
+    const condition = parseExpressionAst(parsedCondition.condition, localExpressions);
+    if (!condition) {
+        return undefined;
+    }
+
+    const parsedBody = parseBracedBlock(statement, parsedCondition.nextIndex);
+    if (!parsedBody) {
+        return undefined;
+    }
+
+    const branchCondition = previousBranchesCondition
+        ? andExpressions(notExpression(previousBranchesCondition), condition)
+        : condition;
+    const bodyStatements = splitScriptStatements(parsedBody.body);
+    if (bodyStatements.length === 0) {
+        return undefined;
+    }
+
+    const operations: FlagPatchOperation[] = [];
+    const branchLocalExpressions = new Map(localExpressions);
+    for (const bodyStatement of bodyStatements) {
+        if (updateLocalExpression(bodyStatement, branchLocalExpressions)) {
+            continue;
+        }
+
+        const parsedOperations = parseFlagPatchOperationStatement(bodyStatement, branchLocalExpressions);
+        if (!parsedOperations) {
+            return undefined;
+        }
+
+        operations.push(...applyConditionToOperations(parsedOperations, branchCondition));
+    }
+
+    let tailIndex = parsedBody.nextIndex;
+    while (/\s/.test(statement[tailIndex] ?? '')) tailIndex += 1;
+    if (tailIndex >= statement.length) {
+        return operations;
+    }
+
+    if (!statement.startsWith('else', tailIndex)) {
+        return undefined;
+    }
+
+    tailIndex += 4;
+    if (/[a-zA-Z0-9_]/.test(statement[tailIndex] ?? '')) {
+        return undefined;
+    }
+    while (/\s/.test(statement[tailIndex] ?? '')) tailIndex += 1;
+
+    const nextPreviousBranchesCondition = previousBranchesCondition
+        ? orExpressions(previousBranchesCondition, condition)
+        : condition;
+    const elseText = statement.slice(tailIndex).trim();
+    if (elseText.startsWith('if')) {
+        const elseIfOperations = parseIfElseFlagPatchOperations(elseText, nextPreviousBranchesCondition, localExpressions);
+        if (!elseIfOperations) {
+            return undefined;
+        }
+
+        operations.push(...elseIfOperations);
+        return operations;
+    }
+
+    const parsedElseBody = parseBracedBlock(statement, tailIndex);
+    if (!parsedElseBody) {
+        return undefined;
+    }
+
+    let afterElseBody = parsedElseBody.nextIndex;
+    while (/\s/.test(statement[afterElseBody] ?? '')) afterElseBody += 1;
+    if (afterElseBody < statement.length) {
+        return undefined;
+    }
+
+    const elseStatements = splitScriptStatements(parsedElseBody.body);
+    if (elseStatements.length === 0) {
+        return undefined;
+    }
+
+    const elseCondition = notExpression(nextPreviousBranchesCondition);
+    const elseLocalExpressions = new Map(localExpressions);
+    for (const elseStatement of elseStatements) {
+        if (updateLocalExpression(elseStatement, elseLocalExpressions)) {
+            continue;
+        }
+
+        const parsedOperations = parseFlagPatchOperationStatement(elseStatement, elseLocalExpressions);
+        if (!parsedOperations) {
+            return undefined;
+        }
+
+        operations.push(...applyConditionToOperations(parsedOperations, elseCondition));
+    }
+
+    return operations;
+}
+
+function parseInlineIfFlagPatchOperations(
+    statement: string,
+    localExpressions: ReadonlyMap<string, ExpressionAst> = new Map(),
+): FlagPatchOperation[] | undefined {
+    let index = 0;
+    while (/\s/.test(statement[index] ?? '')) index += 1;
+    if (!statement.startsWith('if', index)) {
+        return undefined;
+    }
+
+    const afterIf = index + 2;
+    if (/[a-zA-Z0-9_]/.test(statement[afterIf] ?? '')) {
+        return undefined;
+    }
+
+    const parsedCondition = parseParenthesizedCondition(statement, afterIf);
+    if (!parsedCondition) {
+        return undefined;
+    }
+
+    let bodyIndex = parsedCondition.nextIndex;
+    while (/\s/.test(statement[bodyIndex] ?? '')) bodyIndex += 1;
+    if (statement[bodyIndex] === '{') {
+        return undefined;
+    }
+
+    const body = statement.slice(bodyIndex).trim();
+    if (!body || /\belse\b/.test(body)) {
+        return undefined;
+    }
+
+    const condition = parseExpressionAst(parsedCondition.condition, localExpressions);
+    const operation = parseUnconditionalFlagPatchOperation(body, localExpressions);
+    const operations = parseFlagListMutation(body) ?? (operation ? [operation] : undefined);
+    if (!condition || !operations) {
+        return undefined;
+    }
+
+    return applyConditionToOperations(operations, condition);
+}
+
+function parseFlagPatchOperationStatement(
+    statement: string,
+    localExpressions: ReadonlyMap<string, ExpressionAst> = new Map(),
+): FlagPatchOperation[] | undefined {
+    const ifElseOperations = parseIfElseFlagPatchOperations(statement, undefined, localExpressions);
+    if (ifElseOperations) {
+        return ifElseOperations;
+    }
+
+    const conditionalMatch = statement.match(/^if\s*\(([\s\S]+)\)\s*\{\s*([\s\S]*?)\s*;?\s*\}$/);
+    if (!conditionalMatch) {
+        const inlineIfOperations = parseInlineIfFlagPatchOperations(statement, localExpressions);
+        if (inlineIfOperations) {
+            return inlineIfOperations;
+        }
+
+        const postfixMatch = statement.match(/^([\s\S]+?)\s+if\s+([\s\S]+)$/);
+        if (postfixMatch && !postfixMatch[1].includes('{') && !postfixMatch[2].includes('{')) {
+            const operation = parseUnconditionalFlagPatchOperation(postfixMatch[1], localExpressions);
+            const operations = parseFlagListMutation(postfixMatch[1]) ?? (operation ? [operation] : undefined);
+            const condition = parseExpressionAst(postfixMatch[2], localExpressions);
+            if (operations && condition) {
+                return applyConditionToOperations(operations, condition);
+            }
+        }
+
+        const operation = parseUnconditionalFlagPatchOperation(statement, localExpressions);
+        if (operation) {
+            return [operation];
+        }
+
+        if (/^console\.log\([\s\S]*\)$/.test(statement)) {
+            return [];
+        }
+
+        const listMutationOperations = parseFlagListMutation(statement);
+        if (listMutationOperations) {
+            return listMutationOperations;
+        }
+
+        const pureExpression = parseExpressionAst(statement, localExpressions);
+        return pureExpression ? [] : undefined;
+    }
+
+    const condition = parseExpressionAst(conditionalMatch[1], localExpressions);
+    if (!condition) {
+        return undefined;
+    }
+
+    const bodyStatements = splitScriptStatements(conditionalMatch[2]);
+    if (bodyStatements.length === 0) {
+        return undefined;
+    }
+
+    const operations: FlagPatchOperation[] = [];
+    const bodyLocalExpressions = new Map(localExpressions);
+    for (const bodyStatement of bodyStatements) {
+        if (updateLocalExpression(bodyStatement, bodyLocalExpressions)) {
+            continue;
+        }
+
+        const parsedOperations = parseFlagPatchOperationStatement(bodyStatement, bodyLocalExpressions);
+        if (!parsedOperations) {
+            return undefined;
+        }
+
+        operations.push(...parsedOperations);
+    }
+
+    return applyConditionToOperations(operations, condition);
+}
+
 function parseSimpleFlagPatch(code: string): FlagPatchOperation[] | undefined {
     const statements = splitScriptStatements(code);
     if (statements.length === 0) {
@@ -583,46 +1361,18 @@ function parseSimpleFlagPatch(code: string): FlagPatchOperation[] | undefined {
     }
 
     const operations: FlagPatchOperation[] = [];
+    const localExpressions = new Map<string, ExpressionAst>();
     for (const statement of statements) {
-        const match = statement.match(/^state\.flags\['([a-zA-Z0-9_]+)'\]\s*(=|\+=|-=)\s*(.+)$/);
-        if (!match) {
-            return undefined;
-        }
-
-        const [, key, operator, rawValue] = match;
-        const flagReference = rawValue.match(/^state\.flags\['([a-zA-Z0-9_]+)'\]$/);
-        if (operator === '=' && flagReference) {
-            operations.push({
-                op: 'set',
-                key,
-                from: flagReference[1],
-            });
+        if (updateLocalExpression(statement, localExpressions)) {
             continue;
         }
 
-        const value = parseLiteral(rawValue);
-        if (value === undefined) {
+        const parsedOperations = parseFlagPatchOperationStatement(statement, localExpressions);
+        if (!parsedOperations) {
             return undefined;
         }
 
-        if (operator === '=') {
-            operations.push({
-                op: 'set',
-                key,
-                value,
-            });
-            continue;
-        }
-
-        if (typeof value !== 'number') {
-            return undefined;
-        }
-
-        operations.push({
-            op: 'add',
-            key,
-            value: operator === '+=' ? value : -value,
-        });
+        operations.push(...parsedOperations);
     }
 
     return operations;
@@ -740,11 +1490,16 @@ function parseSimpleFlagCondition(code: string): FlagCompareCondition | undefine
 
 class ExpressionAstParser {
     private index = 0;
+    private readonly tokens: Token[];
+    private readonly localExpressions: ReadonlyMap<string, ExpressionAst>;
 
-    constructor(private readonly tokens: Token[]) {}
+    constructor(tokens: Token[], localExpressions: ReadonlyMap<string, ExpressionAst> = new Map()) {
+        this.tokens = tokens;
+        this.localExpressions = localExpressions;
+    }
 
     parse(): ExpressionAst | undefined {
-        const expression = this.parseLogicalOr();
+        const expression = this.parseConditional();
         if (!expression || this.index < this.tokens.length) {
             return undefined;
         }
@@ -764,6 +1519,34 @@ class ExpressionAstParser {
 
         this.index += 1;
         return token.value;
+    }
+
+    private parseConditional(): ExpressionAst | undefined {
+        const condition = this.parseLogicalOr();
+        if (!condition) {
+            return undefined;
+        }
+
+        if (!this.match('?')) {
+            return condition;
+        }
+
+        const consequent = this.parseConditional();
+        if (!consequent || !this.match(':')) {
+            return undefined;
+        }
+
+        const alternate = this.parseConditional();
+        if (!alternate) {
+            return undefined;
+        }
+
+        return {
+            type: 'conditional',
+            condition,
+            consequent,
+            alternate,
+        };
     }
 
     private parseLogicalOr(): ExpressionAst | undefined {
@@ -844,7 +1627,7 @@ class ExpressionAstParser {
 
     private parsePrimary(): ExpressionAst | undefined {
         if (this.match('(')) {
-            const expression = this.parseLogicalOr();
+            const expression = this.parseConditional();
             if (!expression || !this.match(')')) {
                 return undefined;
             }
@@ -852,9 +1635,19 @@ class ExpressionAstParser {
             return expression;
         }
 
+        const callExpression = this.parseCallExpression();
+        if (callExpression) {
+            return callExpression;
+        }
+
         const flagReference = this.parseFlagReference();
         if (flagReference) {
             return flagReference;
+        }
+
+        const localReference = this.parseLocalReference();
+        if (localReference) {
+            return localReference;
         }
 
         const token = this.peek();
@@ -890,8 +1683,103 @@ class ExpressionAstParser {
         return undefined;
     }
 
+    private parseCallExpression(): ExpressionAst | undefined {
+        const startIndex = this.index;
+        if (this.match('Math') && this.match('.')) {
+            const fn = this.match('floor', 'round', 'ceil');
+            if (!fn || !this.match('(')) {
+                this.index = startIndex;
+                return undefined;
+            }
+
+            const argument = this.parseConditional();
+            if (!argument || !this.match(')')) {
+                this.index = startIndex;
+                return undefined;
+            }
+
+            return {
+                type: 'call',
+                fn: fn as 'floor' | 'round' | 'ceil',
+                args: [argument],
+            };
+        }
+
+        this.index = startIndex;
+        if (this.match('parseFloat') && this.match('(')) {
+            const argument = this.parseRoundToArgument();
+            if (!argument || !this.match(')')) {
+                this.index = startIndex;
+                return undefined;
+            }
+
+            return argument;
+        }
+
+        this.index = startIndex;
+        return undefined;
+    }
+
+    private parseRoundToArgument(): ExpressionAst | undefined {
+        const startIndex = this.index;
+        const expression = this.parseConditional();
+        if (!expression) {
+            this.index = startIndex;
+            return undefined;
+        }
+
+        if (!this.match('.') || !this.match('toFixed') || !this.match('(')) {
+            this.index = startIndex;
+            return undefined;
+        }
+
+        const decimalsToken = this.peek();
+        if (!decimalsToken || decimalsToken.type !== 'number') {
+            this.index = startIndex;
+            return undefined;
+        }
+        this.index += 1;
+
+        if (!this.match(')')) {
+            this.index = startIndex;
+            return undefined;
+        }
+
+        return {
+            type: 'call',
+            fn: 'roundTo',
+            args: [
+                expression,
+                { type: 'literal', value: Number(decimalsToken.value) },
+            ],
+        };
+    }
+
     private parseFlagReference(): ExpressionAst | undefined {
         const startIndex = this.index;
+        if (this.match('Q') && this.match('.')) {
+            const keyToken = this.peek();
+            if (keyToken?.type === 'identifier' || keyToken?.type === 'keyword') {
+                this.index += 1;
+                return { type: 'flag', key: keyToken.value };
+            }
+
+            this.index = startIndex;
+            return undefined;
+        }
+
+        if (this.match('this') && this.match('.') && this.match('state') && this.match('.')) {
+            const keyToken = this.peek();
+            if (keyToken?.type === 'identifier' || keyToken?.type === 'keyword') {
+                this.index += 1;
+                return { type: 'flag', key: keyToken.value };
+            }
+
+            this.index = startIndex;
+            return undefined;
+        }
+
+        this.index = startIndex;
         if (!this.match('state') || !this.match('.') || !this.match('flags') || !this.match('[')) {
             this.index = startIndex;
             return undefined;
@@ -917,11 +1805,47 @@ class ExpressionAstParser {
 
         return { type: 'flag', key };
     }
+
+    private parseLocalReference(): ExpressionAst | undefined {
+        const token = this.peek();
+        if (token?.type !== 'identifier') {
+            return undefined;
+        }
+
+        const expression = this.localExpressions.get(token.value);
+        if (!expression) {
+            return undefined;
+        }
+
+        this.index += 1;
+        return expression;
+    }
 }
 
-function parseExpressionAst(code: string): ExpressionAst | undefined {
+function parseExpressionAst(
+    code: string,
+    localExpressions: ReadonlyMap<string, ExpressionAst> = new Map(),
+): ExpressionAst | undefined {
+    const strippedCode = stripOuterParentheses(code);
+    const toFixedMatch = strippedCode.match(/^([\s\S]+)\.toFixed\((\d+)\)$/);
+    if (toFixedMatch) {
+        const expression = parseExpressionAst(toFixedMatch[1], localExpressions);
+        if (!expression) {
+            return undefined;
+        }
+
+        return {
+            type: 'call',
+            fn: 'fixed',
+            args: [
+                expression,
+                { type: 'literal', value: Number(toFixedMatch[2]) },
+            ],
+        };
+    }
+
     const tokens = Transpiler.tokenize(code).filter((token) => token.type !== 'whitespace' && token.type !== 'comment');
-    return new ExpressionAstParser(tokens).parse();
+    return new ExpressionAstParser(tokens, localExpressions).parse();
 }
 
 function legacyConditionRef(code?: string): MechanicsRef[] | undefined {
@@ -960,29 +1884,161 @@ function legacyConditionRef(code?: string): MechanicsRef[] | undefined {
         id: 'legacy.expression',
         params: {
             code: transpiledCode,
-            source: code,
         },
     }];
+}
+
+function escapeHtmlAttribute(value: string): string {
+    return value
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
+function parseOnDisplayAppendHtml(code?: string): string | undefined {
+    if (!code || !code.trim()) {
+        return undefined;
+    }
+
+    const imageSources = [...code.matchAll(/image\.src\s*=\s*["']([^"']+)["']/g)];
+    if (imageSources.length !== 1) {
+        return undefined;
+    }
+
+    const wrapperClass = code.match(/cardEl\.className\s*=\s*["']([^"']+)["']/)?.[1];
+    const imageClass = code.match(/image\.className\s*=\s*["']([^"']+)["']/)?.[1];
+    const imageSource = imageSources[0][1];
+    if (!wrapperClass || !imageClass || !imageSource.startsWith('img/')) {
+        return undefined;
+    }
+
+    const normalized = code.replace(/\s+/g, ' ');
+    const requiredPatterns = [
+        /document\.createElement\(['"]div['"]\)/,
+        /new Image\(\)/,
+        /cardEl\.appendChild\(image\)/,
+        /document\.querySelector\(["']#page #mid_panel #content["']\)/,
+        /contentDiv\.appendChild\(cardEl\)/,
+    ];
+    if (!requiredPatterns.every((pattern) => pattern.test(normalized))) {
+        return undefined;
+    }
+
+    return `<div class="${escapeHtmlAttribute(wrapperClass)}"><img class="${escapeHtmlAttribute(imageClass)}" src="${escapeHtmlAttribute(imageSource)}" alt=""></div>`;
+}
+
+function parseLegacyLayoutEffect(code: string): MechanicsRef[] | undefined {
+    const layoutMatch = code.match(/^const toolsWrapper = document\.getElementById\('tools_wrapper'\);\s*if \(toolsWrapper\) \{\s*toolsWrapper\.style\.display = '([^']+)';\s*\}\s*const elements = document\.querySelectorAll\('header, #content, footer'\);\s*elements\.forEach\(el => \{\s*el\.style\.maxWidth = '([^']+)';\s*\}\);?$/);
+    if (!layoutMatch) {
+        return undefined;
+    }
+
+    return [{
+        id: 'ui.legacyLayout',
+        params: {
+            toolsWrapperDisplay: layoutMatch[1],
+            maxWidth: layoutMatch[2],
+        },
+    }];
+}
+
+function extractLegacyUiNoOpEffects(code: string): { code: string; refs: MechanicsRef[] } {
+    let remainingCode = code;
+    const refs: MechanicsRef[] = [];
+
+    const replaceWithTrace = (
+        pattern: RegExp,
+        buildParams: (...matches: string[]) => Record<string, unknown>,
+    ) => {
+        remainingCode = remainingCode.replace(pattern, (...args: string[]) => {
+            refs.push({
+                id: 'ui.legacyLayout',
+                params: buildParams(...args),
+            });
+            return '\n';
+        });
+    };
+
+    replaceWithTrace(
+        /const toolsWrapper = document\.getElementById\('tools_wrapper'\);\s*if \(toolsWrapper\) \{\s*toolsWrapper\.style\.display = '([^']+)';\s*\}\s*;?/g,
+        (_match, display) => ({
+            toolsWrapperDisplay: display,
+        }),
+    );
+
+    replaceWithTrace(
+        /const rightTools = document\.querySelector\('\.tools\.right'\);\s*if \(rightTools\) \{\s*rightTools\.style\.display = '([^']+)';\s*\}\s*;?/g,
+        (_match, display) => ({
+            rightToolsDisplay: display,
+        }),
+    );
+
+    replaceWithTrace(
+        /const contentElement = document\.getElementById\('content'\);\s*contentElement\.style\.backgroundColor = '([^']+)';\s*;?/g,
+        (_match, backgroundColor) => ({
+            contentBackgroundColor: backgroundColor,
+        }),
+    );
+
+    replaceWithTrace(
+        /const header = document\.querySelector\('header'\);\s*header\.style\.color = '([^']+)';\s*;?/g,
+        (_match, color) => ({
+            headerColor: color,
+        }),
+    );
+
+    replaceWithTrace(
+        /(?:window\.)?dendryUI\.audio(Queue|Playlist)\s*=\s*\[\]\s*;?/g,
+        (_match, target) => ({
+            audioTarget: target,
+            action: 'clear',
+        }),
+    );
+
+    replaceWithTrace(
+        /if \(Q\.difficulty >= 0\) \{\s*window\.dendryUI\.dendryEngine\.state\.currentHands\['main'\] = \[\];\s*\} else \{\s*window\.dendryUI\.dendryEngine\.state\.currentHands\['main\.main_easy'\] = \[\];\s*\}\s*;?/g,
+        () => ({
+            hand: 'main',
+            action: 'clear',
+        }),
+    );
+
+    return {
+        code: formatScript(remainingCode),
+        refs,
+    };
 }
 
 function legacyEffectRef(code?: string): MechanicsRef[] | undefined {
     if (!code || !code.trim()) return undefined;
     const transpiledCode = formatScript(Transpiler.transpile(code, 'script'));
-    const operations = parseSimpleFlagPatch(transpiledCode);
+    const layoutEffect = parseLegacyLayoutEffect(transpiledCode);
+    if (layoutEffect) {
+        return layoutEffect;
+    }
+
+    const extractedUiEffects = extractLegacyUiNoOpEffects(transpiledCode);
+    const scriptToParse = extractedUiEffects.refs.length > 0 ? extractedUiEffects.code : transpiledCode;
+
+    const operations = parseSimpleFlagPatch(scriptToParse);
     if (operations) {
         return [{
             id: 'flags.patch',
             params: {
                 operations,
             },
-        }];
+        }, ...extractedUiEffects.refs];
+    }
+
+    if (extractedUiEffects.refs.length > 0 && splitScriptStatements(extractedUiEffects.code).length === 0) {
+        return extractedUiEffects.refs;
     }
 
     return [{
         id: 'legacy.script',
         params: {
             code: transpiledCode,
-            source: code,
         },
     }];
 }
@@ -991,7 +2047,14 @@ function normalizeTargetId(targetId: string): string {
     return targetId.trim().replace(/^(@|#)/, '');
 }
 
-function legacyGoToRef(code?: string): MechanicsRef[] | undefined {
+function shouldDropLegacyGoToRoute(sourcePath: string, route: { targetSceneId: string; condition?: string }): boolean {
+    const normalizedSourcePath = sourcePath.replace(/\\/g, '/');
+    // Library subsections use `go-to: menu` as Dendry menu continuation, not as
+    // an immediate redirect away from the detail content.
+    return normalizedSourcePath.endsWith('source/scenes/library.scene.dry') && route.targetSceneId === 'menu';
+}
+
+function legacyGoToRef(code: string | undefined, sourcePath: string): MechanicsRef[] | undefined {
     if (!code || !code.trim()) return undefined;
 
     const routes = code
@@ -1003,22 +2066,24 @@ function legacyGoToRef(code?: string): MechanicsRef[] | undefined {
             if (!match) {
                 return {
                     targetSceneId: normalizeTargetId(route),
-                    source: route,
                 };
             }
 
             return {
                 targetSceneId: normalizeTargetId(match[1]),
                 condition: Transpiler.transpile(match[2], 'condition'),
-                source: route,
             };
-        });
+        })
+        .filter((route) => !shouldDropLegacyGoToRoute(sourcePath, route));
+
+    if (routes.length === 0) {
+        return undefined;
+    }
 
     return [{
         id: 'legacy.goto',
         params: {
             routes,
-            source: code,
         },
     }];
 }
@@ -1038,23 +2103,63 @@ function compactRecord<T extends Record<string, unknown>>(record: T): T {
     return record;
 }
 
-function generateJsonScene(scene: DryScene, sourcePath: string, idOverride?: string): ContentSceneRecord {
+function resolveGeneratedChoiceTarget(
+    choiceTargetId: string,
+    parentSceneId: string | undefined,
+    siblingSectionIds: ReadonlySet<string> | undefined,
+): string {
+    if (!parentSceneId || !siblingSectionIds?.has(choiceTargetId)) {
+        return choiceTargetId;
+    }
+
+    return `${parentSceneId}.${choiceTargetId}`;
+}
+
+function getSceneCardKind(scene: DryScene): ContentCardKind | undefined {
+    if (scene.isHand) return 'hand';
+    if (scene.isPinnedCard) return 'pinned-card';
+    if (scene.isDeck) return 'deck';
+    if (scene.isCard) return 'card';
+    return undefined;
+}
+
+function getSceneUi(scene: DryScene): ContentSceneRecord['ui'] | undefined {
+    const ui = compactRecord({
+        cardKind: getSceneCardKind(scene),
+        cardImage: scene.cardImage,
+        maxCards: Number.isFinite(scene.maxCards) ? scene.maxCards : undefined,
+    });
+
+    return Object.keys(ui).length > 0 ? ui : undefined;
+}
+
+function generateJsonScene(
+    scene: DryScene,
+    sourcePath: string,
+    idOverride?: string,
+    parentSceneId?: string,
+    siblingSectionIds?: ReadonlySet<string>,
+): ContentSceneRecord {
+    const appendHtml = parseOnDisplayAppendHtml(scene.onDisplay);
+    const bodyHtml = [scene.content.join('\n'), appendHtml].filter(Boolean).join('\n');
+
     return compactRecord({
         id: idOverride ?? scene.id,
         titleHtml: scene.title || scene.id,
         subtitleHtml: scene.subtitle ?? null,
-        bodyHtml: scene.content.join('\n'),
+        bodyHtml,
         conditions: legacyConditionRef(scene.viewIf),
-        onArrival: compactRefs(legacyEffectRef(scene.onArrival), legacyGoToRef(scene.goTo)),
-        onDisplay: legacyEffectRef(scene.onDisplay),
+        onArrival: compactRefs(legacyEffectRef(scene.onArrival), legacyGoToRef(scene.goTo, sourcePath)),
+        onDisplay: appendHtml ? undefined : legacyEffectRef(scene.onDisplay),
         choices: scene.choices.map((choice) => compactRecord({
             id: choice.targetId,
             labelHtml: choice.text || choice.targetId,
-            nextSceneId: choice.targetId,
+            nextSceneId: resolveGeneratedChoiceTarget(choice.targetId, parentSceneId, siblingSectionIds),
             conditions: legacyConditionRef(choice.viewIf),
             effects: legacyEffectRef(choice.onChoose),
         })),
         tags: scene.tags,
+        ui: getSceneUi(scene),
         sourcePath: sourcePath.replace(/\\/g, '/'),
     });
 }
@@ -1125,6 +2230,7 @@ function collectAssetReferences(scenes: Record<string, ContentSceneRecord>): str
             scene.titleHtml,
             scene.subtitleHtml ?? '',
             scene.bodyHtml,
+            scene.ui?.cardImage ?? '',
             ...scene.choices.map((choice) => choice.labelHtml),
         ];
 
@@ -1136,6 +2242,14 @@ function collectAssetReferences(scenes: Record<string, ContentSceneRecord>): str
     }
 
     return Array.from(references).sort((left, right) => left.localeCompare(right));
+}
+
+function isProtectedAdvisorRootScene(scene: ContentSceneRecord | undefined): boolean {
+    return Boolean(
+        scene?.ui?.cardKind === 'pinned-card'
+            && scene.tags?.includes('advisor')
+            && scene.sourcePath?.startsWith('source/scenes/advisors/'),
+    );
 }
 
 // --- Main ---
@@ -1192,12 +2306,38 @@ function processDir(dir: string, category: string = 'misc') {
                         });
                     }
                     if (scene.sections) {
+                        const siblingSectionIds = new Set(scene.sections.map((section) => section.id));
+                        const shouldQualifySectionChoices = fullPath.replace(/\\/g, '/').endsWith('source/scenes/library.scene.dry');
+                        const protectedCollidingSectionIds = new Set(
+                            scene.sections
+                                .map((section) => section.id)
+                                .filter((sectionId) => isProtectedAdvisorRootScene(contentScenes[sectionId])),
+                        );
+                        const qualifiedChoiceTargetIds = shouldQualifySectionChoices
+                            ? siblingSectionIds
+                            : protectedCollidingSectionIds;
+                        const qualifiedChoiceParentId = qualifiedChoiceTargetIds.size > 0 ? scene.id : undefined;
                         for (const sub of scene.sections) {
                             if (OUTPUT_MODE === 'json') {
-                                contentScenes[sub.id] = generateJsonScene(sub, fullPath);
+                                const generatedSubScene = generateJsonScene(
+                                    sub,
+                                    fullPath,
+                                    undefined,
+                                    qualifiedChoiceParentId,
+                                    qualifiedChoiceTargetIds,
+                                );
+                                if (!isProtectedAdvisorRootScene(contentScenes[sub.id])) {
+                                    contentScenes[sub.id] = generatedSubScene;
+                                }
                                 const qualifiedSubId = `${scene.id}.${sub.id}`;
                                 if (!contentScenes[qualifiedSubId]) {
-                                    contentScenes[qualifiedSubId] = generateJsonScene(sub, fullPath, qualifiedSubId);
+                                    contentScenes[qualifiedSubId] = generateJsonScene(
+                                        sub,
+                                        fullPath,
+                                        qualifiedSubId,
+                                        qualifiedChoiceParentId,
+                                        qualifiedChoiceTargetIds,
+                                    );
                                 }
                             } else {
                                 const subVarName = getUniqueVarName(targetBucket, sub.id);
@@ -1237,8 +2377,8 @@ if (OUTPUT_MODE === 'json') {
             references: collectAssetReferences(contentScenes),
         },
         mechanics: {
-            conditions: ['flags.compare', 'legacy.expression'],
-        effects: ['flags.patch', 'legacy.script', 'legacy.goto'],
+            conditions: ['flags.compare', 'flags.expression', 'legacy.expression'],
+            effects: ['flags.patch', 'ui.legacyLayout', 'legacy.script', 'legacy.goto'],
         },
         initialSceneId: 'start_menu_2',
     };

@@ -837,7 +837,7 @@ Of course, the main goal of the United Hindenburg Committees is to dispel the no
 @organizational_endorsements_op
 title: What about the endorsements of the non-partisan organizations?
 subtitle: Influential groups such as the RLB, DHV, and the Pan-Germans, have been growing a rift between themselves and Hindenburg.
-view-if: eckener_used and industry_used and (religion_used or not religion_available) and nd (westarp_used or spd_candidate_1932)
+view-if: eckener_used and industry_used and (religion_used or not religion_available) and (westarp_used or spd_candidate_1932)
 on-arrival: {!
 if (Q.hindenburg_support) {
     Q.new_middle_kvp += Q.hindenburg_support;

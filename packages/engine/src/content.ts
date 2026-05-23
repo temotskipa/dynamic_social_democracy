@@ -26,6 +26,34 @@ export interface ContentMechanicsRegistry {
 
 type TextFormatter = (text: string, state: Readonly<GameState>) => string;
 
+type ExpressionAst =
+  | { type: "literal"; value: string | number | boolean | null }
+  | { type: "flag"; key: string }
+  | { type: "unary"; operator: "!" | "-"; expression: ExpressionAst }
+  | { type: "binary"; operator: string; left: ExpressionAst; right: ExpressionAst }
+  | { type: "conditional"; condition: ExpressionAst; consequent: ExpressionAst; alternate: ExpressionAst }
+  | { type: "call"; fn: "floor" | "round" | "ceil" | "roundTo" | "fixed"; args: ExpressionAst[] };
+
+const BINARY_EXPRESSION_OPERATORS = new Set([
+  "&&",
+  "||",
+  "==",
+  "!=",
+  "===",
+  "!==",
+  ">=",
+  "<=",
+  ">",
+  "<",
+  "+",
+  "-",
+  "*",
+  "/",
+  "%",
+]);
+
+const CALL_EXPRESSION_FUNCTIONS = new Set(["floor", "round", "ceil", "roundTo", "fixed"]);
+
 function getStringParam(
   params: Record<string, JsonValue>,
   key: string,
@@ -61,10 +89,15 @@ function getFlagPatchOperations(params: Record<string, JsonValue>): Array<Record
 function resolveFlagPatchValue(
   state: Readonly<GameState>,
   operation: Record<string, JsonValue>,
-): JsonValue | undefined {
+): unknown {
   const from = operation.from;
   if (typeof from === "string") {
     return state.flags[from] ?? 0;
+  }
+
+  const valueExpression = operation.valueExpression;
+  if (isExpressionAst(valueExpression)) {
+    return evaluateExpressionAstValue(state, valueExpression);
   }
 
   return operation.value;
@@ -80,6 +113,154 @@ function resolveFlagCompareValue(
   }
 
   return params.value;
+}
+
+function isJsonObject(value: JsonValue | undefined): value is Record<string, JsonValue> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isExpressionAst(value: JsonValue | undefined): value is ExpressionAst {
+  if (!isJsonObject(value) || typeof value.type !== "string") {
+    return false;
+  }
+
+  switch (value.type) {
+    case "literal":
+      return (
+        value.value === null ||
+        typeof value.value === "string" ||
+        typeof value.value === "number" ||
+        typeof value.value === "boolean"
+      );
+    case "flag":
+      return typeof value.key === "string";
+    case "unary":
+      return (
+        (value.operator === "!" || value.operator === "-") &&
+        isExpressionAst(value.expression)
+      );
+    case "binary":
+      return (
+        typeof value.operator === "string" &&
+        BINARY_EXPRESSION_OPERATORS.has(value.operator) &&
+        isExpressionAst(value.left) &&
+        isExpressionAst(value.right)
+      );
+    case "conditional":
+      return (
+        isExpressionAst(value.condition) &&
+        isExpressionAst(value.consequent) &&
+        isExpressionAst(value.alternate)
+      );
+    case "call":
+      return (
+        typeof value.fn === "string" &&
+        CALL_EXPRESSION_FUNCTIONS.has(value.fn) &&
+        Array.isArray(value.args) &&
+        value.args.every((argument) => isExpressionAst(argument))
+      );
+    default:
+      return false;
+  }
+}
+
+function evaluateExpressionAstValue(
+  state: Readonly<GameState>,
+  expression: ExpressionAst,
+): unknown {
+  switch (expression.type) {
+    case "literal":
+      return expression.value;
+    case "flag":
+      return state.flags[expression.key] ?? 0;
+    case "unary": {
+      const value = evaluateExpressionAstValue(state, expression.expression);
+      if (expression.operator === "!") {
+        return !value;
+      }
+
+      return -Number(value ?? 0);
+    }
+    case "binary": {
+      if (expression.operator === "&&") {
+        const left = evaluateExpressionAstValue(state, expression.left);
+        return left ? evaluateExpressionAstValue(state, expression.right) : left;
+      }
+
+      if (expression.operator === "||") {
+        const left = evaluateExpressionAstValue(state, expression.left);
+        return left ? left : evaluateExpressionAstValue(state, expression.right);
+      }
+
+      const left = evaluateExpressionAstValue(state, expression.left);
+      const right = evaluateExpressionAstValue(state, expression.right);
+      switch (expression.operator) {
+        case "==":
+          return left == right;
+        case "!=":
+          return left != right;
+        case "===":
+          return left === right;
+        case "!==":
+          return left !== right;
+        case ">=":
+          return Number(left ?? 0) >= Number(right ?? 0);
+        case "<=":
+          return Number(left ?? 0) <= Number(right ?? 0);
+        case ">":
+          return Number(left ?? 0) > Number(right ?? 0);
+        case "<":
+          return Number(left ?? 0) < Number(right ?? 0);
+        case "+":
+          return Number(left ?? 0) + Number(right ?? 0);
+        case "-":
+          return Number(left ?? 0) - Number(right ?? 0);
+        case "*":
+          return Number(left ?? 0) * Number(right ?? 0);
+        case "/":
+          return Number(left ?? 0) / Number(right ?? 0);
+        case "%":
+          return Number(left ?? 0) % Number(right ?? 0);
+        default:
+          return false;
+      }
+    }
+    case "conditional":
+      return evaluateExpressionAstValue(state, expression.condition)
+        ? evaluateExpressionAstValue(state, expression.consequent)
+        : evaluateExpressionAstValue(state, expression.alternate);
+    case "call": {
+      const [firstArgument, secondArgument] = expression.args.map((argument) =>
+        evaluateExpressionAstValue(state, argument),
+      );
+      switch (expression.fn) {
+        case "floor":
+          return Math.floor(Number(firstArgument ?? 0));
+        case "round":
+          return Math.round(Number(firstArgument ?? 0));
+        case "ceil":
+          return Math.ceil(Number(firstArgument ?? 0));
+        case "roundTo": {
+          const decimals = Number(secondArgument ?? 0);
+          const fixedDecimals = Number.isFinite(decimals)
+            ? Math.max(0, Math.min(100, Math.trunc(decimals)))
+            : 0;
+          return Number(Number(firstArgument ?? 0).toFixed(fixedDecimals));
+        }
+        case "fixed": {
+          const decimals = Number(secondArgument ?? 0);
+          const fixedDecimals = Number.isFinite(decimals)
+            ? Math.max(0, Math.min(100, Math.trunc(decimals)))
+            : 0;
+          return Number(firstArgument ?? 0).toFixed(fixedDecimals);
+        }
+        default:
+          return false;
+      }
+    }
+    default:
+      return false;
+  }
 }
 
 export const defaultContentMechanicsRegistry: ContentMechanicsRegistry = {
@@ -114,6 +295,14 @@ export const defaultContentMechanicsRegistry: ContentMechanicsRegistry = {
           return false;
       }
     },
+    "flags.expression": (state, params) => {
+      const ast = params.ast;
+      if (!isExpressionAst(ast)) {
+        return false;
+      }
+
+      return Boolean(evaluateExpressionAstValue(state, ast));
+    },
     "legacy.expression": (state, params) => {
       return LogicInterpreter.evaluateCondition(getStringParam(params, "code", "true"), state as GameState);
     },
@@ -126,9 +315,31 @@ export const defaultContentMechanicsRegistry: ContentMechanicsRegistry = {
           continue;
         }
 
+        const condition = operation.condition;
+        if (
+          condition !== undefined &&
+          (!isExpressionAst(condition) || !Boolean(evaluateExpressionAstValue(state, condition)))
+        ) {
+          continue;
+        }
+
         const value = resolveFlagPatchValue(state, operation);
         if (operation.op === "set") {
           state.flags[key] = value;
+          continue;
+        }
+
+        if (operation.op === "arrayPush") {
+          const currentValue = state.flags[key];
+          const currentArray = Array.isArray(currentValue) ? currentValue : [];
+          state.flags[key] = [...currentArray, value];
+          continue;
+        }
+
+        if (operation.op === "arrayRemove") {
+          const currentValue = state.flags[key];
+          const currentArray = Array.isArray(currentValue) ? currentValue : [];
+          state.flags[key] = currentArray.filter((item) => item !== value);
           continue;
         }
 
@@ -137,7 +348,16 @@ export const defaultContentMechanicsRegistry: ContentMechanicsRegistry = {
           const delta = Number(value ?? 0);
           state.flags[key] = currentValue + delta;
         }
+
+        if (operation.op === "multiply") {
+          const currentValue = Number(state.flags[key] ?? 0);
+          const factor = Number(value ?? 1);
+          state.flags[key] = currentValue * factor;
+        }
       }
+    },
+    "ui.legacyLayout": () => {
+      // The modern Preact shell owns layout; legacy Dendry chrome hints are imported for traceability only.
     },
     "legacy.script": (state, params) => {
       try {
@@ -252,6 +472,7 @@ function hydrateScene(
     title: sceneRecord.titleHtml,
     subtitle: sceneRecord.subtitleHtml ?? undefined,
     tags: sceneRecord.tags,
+    ui: sceneRecord.ui,
     viewIf: (state) => runConditions(sceneRecord.conditions, state, registry),
     onArrival: (state) => runEffects(sceneRecord.onArrival, state, registry),
     onDisplay: (state) => runEffects(sceneRecord.onDisplay, state, registry),

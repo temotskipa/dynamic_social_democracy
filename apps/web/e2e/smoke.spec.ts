@@ -128,6 +128,21 @@ test("can enter the start game flow", async ({ page }) => {
     })
     .toBe("main.main_easy");
 
+  const mainSnapshot = await readSnapshot(page);
+  expect(mainSnapshot.board).toEqual(
+    expect.objectContaining({
+      decks: expect.arrayContaining([
+        expect.objectContaining({ title: "Party Affairs" }),
+      ]),
+      pinnedCards: expect.arrayContaining([
+        expect.objectContaining({ title: "Rudolf Hilferding" }),
+        expect.objectContaining({ title: "Shuffle Leadership" }),
+      ]),
+    }),
+  );
+  await expect(page.getByRole("button", { name: "Party Affairs" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Rudolf Hilferding" })).toBeVisible();
+
   expect(pageErrors).toEqual([]);
   expect(consoleErrors).toEqual([]);
 });

@@ -284,6 +284,216 @@ test("runs imported flag patch operations without legacy eval", () => {
               { op: "add", key: "resources", value: 2 },
               { op: "set", key: "budget", from: "resources" },
               { op: "set", key: "chancellor", value: "Braun" },
+              { op: "set", key: "parties", value: ["spd", "kpd"] },
+              { op: "arrayPush", key: "parties", value: "ddp" },
+              { op: "arrayRemove", key: "parties", value: "kpd" },
+              {
+                op: "add",
+                key: "resources",
+                value: 1,
+                condition: {
+                  type: "binary",
+                  operator: "==",
+                  left: { type: "flag", key: "chancellor" },
+                  right: { type: "literal", value: "Braun" },
+                },
+              },
+              {
+                op: "multiply",
+                key: "resources",
+                value: 2,
+                condition: {
+                  type: "binary",
+                  operator: "==",
+                  left: { type: "flag", key: "chancellor" },
+                  right: { type: "literal", value: "Wirth" },
+                },
+              },
+              { op: "set", key: "dvp_right", value: 7 },
+              { op: "set", key: "dvp_left", value: 4 },
+              {
+                op: "set",
+                key: "dvp_ideology",
+                value: "Right",
+                condition: {
+                  type: "binary",
+                  operator: "||",
+                  left: {
+                    type: "binary",
+                    operator: ">",
+                    left: { type: "flag", key: "dvp_right" },
+                    right: {
+                      type: "binary",
+                      operator: "*",
+                      left: { type: "flag", key: "dvp_left" },
+                      right: { type: "literal", value: 1.5 },
+                    },
+                  },
+                  right: {
+                    type: "binary",
+                    operator: ">",
+                    left: { type: "flag", key: "dvp_right" },
+                    right: {
+                      type: "binary",
+                      operator: "+",
+                      left: { type: "flag", key: "dvp_left" },
+                      right: { type: "literal", value: 4 },
+                    },
+                  },
+                },
+              },
+              {
+                op: "set",
+                key: "dvp_ideology",
+                value: "Moderate",
+                condition: {
+                  type: "unary",
+                  operator: "!",
+                  expression: {
+                    type: "binary",
+                    operator: "||",
+                    left: {
+                      type: "binary",
+                      operator: ">",
+                      left: { type: "flag", key: "dvp_right" },
+                      right: {
+                        type: "binary",
+                        operator: "*",
+                        left: { type: "flag", key: "dvp_left" },
+                        right: { type: "literal", value: 1.5 },
+                      },
+                    },
+                    right: {
+                      type: "binary",
+                      operator: ">",
+                      left: { type: "flag", key: "dvp_right" },
+                      right: {
+                        type: "binary",
+                        operator: "+",
+                        left: { type: "flag", key: "dvp_left" },
+                        right: { type: "literal", value: 4 },
+                      },
+                    },
+                  },
+                },
+              },
+              {
+                op: "set",
+                key: "score",
+                valueExpression: {
+                  type: "binary",
+                  operator: "-",
+                  left: {
+                    type: "binary",
+                    operator: "*",
+                    left: { type: "flag", key: "resources" },
+                    right: { type: "flag", key: "budget" },
+                  },
+                  right: { type: "literal", value: 4 },
+                },
+              },
+              {
+                op: "add",
+                key: "score",
+                valueExpression: {
+                  type: "binary",
+                  operator: "/",
+                  left: { type: "flag", key: "resources" },
+                  right: { type: "literal", value: 2 },
+                },
+              },
+              {
+                op: "set",
+                key: "rounded",
+                valueExpression: {
+                  type: "call",
+                  fn: "roundTo",
+                  args: [
+                    {
+                      type: "binary",
+                      operator: "/",
+                      left: { type: "flag", key: "score" },
+                      right: { type: "literal", value: 8 },
+                    },
+                    { type: "literal", value: 1 },
+                  ],
+                },
+              },
+              {
+                op: "set",
+                key: "floored",
+                valueExpression: {
+                  type: "call",
+                  fn: "floor",
+                  args: [{ type: "flag", key: "rounded" }],
+                },
+              },
+              {
+                op: "set",
+                key: "resources_display",
+                valueExpression: {
+                  type: "call",
+                  fn: "fixed",
+                  args: [
+                    { type: "flag", key: "resources" },
+                    { type: "literal", value: 1 },
+                  ],
+                },
+              },
+              { op: "set", key: "z_relation", value: 42 },
+              { op: "set", key: "z_r", value: 9 },
+              {
+                op: "set",
+                key: "z_no_confidence",
+                valueExpression: {
+                  type: "conditional",
+                  condition: {
+                    type: "binary",
+                    operator: "<",
+                    left: { type: "flag", key: "z_relation" },
+                    right: { type: "literal", value: 45 },
+                  },
+                  consequent: { type: "literal", value: 1 },
+                  alternate: { type: "literal", value: 0 },
+                },
+              },
+              {
+                op: "add",
+                key: "no_confidence_votes",
+                valueExpression: {
+                  type: "conditional",
+                  condition: { type: "flag", key: "z_no_confidence" },
+                  consequent: { type: "flag", key: "z_r" },
+                  alternate: { type: "literal", value: 0 },
+                },
+              },
+              { op: "set", key: "liberal_parliament", value: false },
+              { op: "set", key: "bourgeois_parliament", value: true },
+              { op: "set", key: "lvp_formed", value: false },
+              {
+                op: "set",
+                key: "emergency_decree_mitigated",
+                valueExpression: {
+                  type: "binary",
+                  operator: "||",
+                  left: { type: "flag", key: "liberal_parliament" },
+                  right: {
+                    type: "binary",
+                    operator: "||",
+                    left: {
+                      type: "binary",
+                      operator: "&&",
+                      left: { type: "flag", key: "bourgeois_parliament" },
+                      right: {
+                        type: "unary",
+                        operator: "!",
+                        expression: { type: "flag", key: "lvp_formed" },
+                      },
+                    },
+                    right: { type: "flag", key: "lvp_formed" },
+                  },
+                },
+              },
             ],
           },
         }],
@@ -295,9 +505,60 @@ test("runs imported flag patch operations without legacy eval", () => {
   const bundle = hydrateContentBundle(contentBundle);
   const session = runCurrentSceneArrival(bundle, createSession(bundle));
 
-  assert.equal(session.state.flags.resources, 5);
+  assert.equal(session.state.flags.resources, 6);
   assert.equal(session.state.flags.budget, 5);
+  assert.equal(session.state.flags.score, 29);
+  assert.equal(session.state.flags.rounded, 3.6);
+  assert.equal(session.state.flags.floored, 3);
+  assert.equal(session.state.flags.resources_display, "6.0");
+  assert.equal(session.state.flags.z_no_confidence, 1);
+  assert.equal(session.state.flags.no_confidence_votes, 9);
+  assert.equal(session.state.flags.emergency_decree_mitigated, true);
   assert.equal(session.state.flags.chancellor, "Braun");
+  assert.equal(session.state.flags.dvp_ideology, "Right");
+  assert.deepEqual(session.state.flags.parties, ["spd", "ddp"]);
+  assert.equal(session.state.flags.__legacyScriptErrorCount, undefined);
+});
+
+test("ignores imported legacy layout hints without legacy eval", () => {
+  const contentBundle: ContentBundle = {
+    metadata: {
+      id: "legacy-layout-content",
+      title: "Legacy Layout Content",
+      version: "0.0.0",
+      sourceFormat: "json",
+      generatedAt: "1970-01-01T00:00:00.000Z",
+    },
+    initialSceneId: "start",
+    mechanics: {
+      conditions: ["legacy.expression"],
+      effects: ["ui.legacyLayout"],
+    },
+    qdisplays: {},
+    assets: {
+      references: [],
+    },
+    scenes: {
+      start: {
+        id: "start",
+        titleHtml: "Start",
+        bodyHtml: "Start",
+        onArrival: [{
+          id: "ui.legacyLayout",
+          params: {
+            toolsWrapperDisplay: "block",
+            maxWidth: "540px",
+          },
+        }],
+        choices: [],
+      },
+    },
+  };
+
+  const bundle = hydrateContentBundle(contentBundle);
+  const session = runCurrentSceneArrival(bundle, createSession(bundle));
+
+  assert.equal(session.state.currentSceneId, "start");
   assert.equal(session.state.flags.__legacyScriptErrorCount, undefined);
 });
 
@@ -379,6 +640,119 @@ test("runs imported flag compare conditions without legacy eval", () => {
     "match-copy",
     "missing-is-falsy",
   ]);
+});
+
+test("runs imported flag expression conditions without legacy eval", () => {
+  const contentBundle: ContentBundle = {
+    metadata: {
+      id: "flag-expression-content",
+      title: "Flag Expression Content",
+      version: "0.0.0",
+      sourceFormat: "json",
+      generatedAt: "1970-01-01T00:00:00.000Z",
+    },
+    initialSceneId: "start",
+    mechanics: {
+      conditions: ["flags.expression"],
+      effects: ["flags.patch"],
+    },
+    qdisplays: {},
+    assets: {
+      references: [],
+    },
+    scenes: {
+      start: {
+        id: "start",
+        titleHtml: "Start",
+        bodyHtml: "Start",
+        onArrival: [{
+          id: "flags.patch",
+          params: {
+            operations: [
+              { op: "set", key: "resources", value: 4 },
+              { op: "set", key: "budget", value: 3 },
+              { op: "set", key: "cabinet", value: "Braun" },
+            ],
+          },
+        }],
+        choices: [
+          {
+            id: "compound",
+            labelHtml: "Compound",
+            nextSceneId: "end",
+            conditions: [{
+              id: "flags.expression",
+              params: {
+                ast: {
+                  type: "binary",
+                  operator: "||",
+                  left: {
+                    type: "binary",
+                    operator: "==",
+                    left: { type: "flag", key: "cabinet" },
+                    right: { type: "literal", value: "Wirth" },
+                  },
+                  right: {
+                    type: "binary",
+                    operator: "&&",
+                    left: {
+                      type: "binary",
+                      operator: ">=",
+                      left: {
+                        type: "binary",
+                        operator: "+",
+                        left: { type: "flag", key: "resources" },
+                        right: { type: "flag", key: "budget" },
+                      },
+                      right: { type: "literal", value: 7 },
+                    },
+                    right: {
+                      type: "unary",
+                      operator: "!",
+                      expression: { type: "flag", key: "missing" },
+                    },
+                  },
+                },
+              },
+            }],
+          },
+          {
+            id: "hidden",
+            labelHtml: "Hidden",
+            nextSceneId: "end",
+            conditions: [{
+              id: "flags.expression",
+              params: {
+                ast: {
+                  type: "binary",
+                  operator: ">",
+                  left: {
+                    type: "binary",
+                    operator: "%",
+                    left: { type: "flag", key: "resources" },
+                    right: { type: "literal", value: 2 },
+                  },
+                  right: { type: "literal", value: 0 },
+                },
+              },
+            }],
+          },
+        ],
+      },
+      end: {
+        id: "end",
+        titleHtml: "End",
+        bodyHtml: "End",
+        choices: [],
+      },
+    },
+  };
+
+  const bundle = hydrateContentBundle(contentBundle);
+  const session = runCurrentSceneArrival(bundle, createSession(bundle));
+  const snapshot = createSessionSnapshot(bundle, session);
+
+  assert.deepEqual(snapshot.visibleChoices.map((choice) => choice.id), ["compound"]);
 });
 
 test("provides a minimal Dendry this-context for legacy scripts", () => {

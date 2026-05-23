@@ -4,6 +4,8 @@ import type {
   GameSession,
   GameState,
   Scene,
+  SessionBoardSnapshot,
+  SessionCardSnapshot,
   SerializedGameSession,
   SessionChoiceSnapshot,
   SessionSnapshot,
@@ -182,15 +184,94 @@ export function getVisibleChoices(
   });
 }
 
+function isSceneVisible(scene: Scene, state: Readonly<GameState>): boolean {
+  if (!scene.viewIf) {
+    return true;
+  }
+
+  try {
+    return scene.viewIf(state);
+  } catch {
+    return false;
+  }
+}
+
+function createCardSnapshot(
+  bundle: GameBundle,
+  scene: Scene,
+  state: Readonly<GameState>,
+  choiceId?: string,
+): SessionCardSnapshot {
+  return {
+    id: scene.id,
+    title: formatBundleText(bundle, scene.title, state),
+    tags: scene.tags,
+    ui: scene.ui,
+    choiceId,
+  };
+}
+
+function resolveChoiceTarget(
+  bundle: GameBundle,
+  choice: Choice,
+  state: Readonly<GameState>,
+): Scene | undefined {
+  if (!choice.nextSceneId) {
+    return undefined;
+  }
+
+  const resolvedSceneId = bundle.resolveSceneId?.(choice.nextSceneId, state) ?? choice.nextSceneId;
+  return resolvedSceneId ? bundle.scenes[resolvedSceneId] : undefined;
+}
+
 export function createChoiceSnapshots(
   bundle: GameBundle,
   session: Readonly<GameSession>,
 ): SessionChoiceSnapshot[] {
-  return getVisibleChoices(bundle, session).map((choice) => ({
-    id: choice.id,
-    text: choice.text,
-    nextSceneId: choice.nextSceneId,
-  }));
+  return getVisibleChoices(bundle, session).map((choice) => {
+    const targetScene = resolveChoiceTarget(bundle, choice, session.state);
+
+    return {
+      id: choice.id,
+      text: choice.text,
+      nextSceneId: choice.nextSceneId,
+      target: targetScene ? createCardSnapshot(bundle, targetScene, session.state, choice.id) : null,
+    };
+  });
+}
+
+function createBoardSnapshot(
+  bundle: GameBundle,
+  session: Readonly<GameSession>,
+): SessionBoardSnapshot | null {
+  const scene = getCurrentScene(bundle, session);
+  if (scene?.ui?.cardKind !== "hand") {
+    return null;
+  }
+
+  const visibleChoices = getVisibleChoices(bundle, session);
+  const choiceTargets = visibleChoices
+    .map((choice) => ({ choice, scene: resolveChoiceTarget(bundle, choice, session.state) }))
+    .filter((entry): entry is { choice: Choice; scene: Scene } => Boolean(entry.scene));
+  const targetChoiceIdsBySceneId = new Map(choiceTargets.map((entry) => [entry.scene.id, entry.choice.id]));
+  const choiceCards = choiceTargets
+    .filter((entry) => isSceneVisible(entry.scene, session.state))
+    .map((entry) => createCardSnapshot(bundle, entry.scene, session.state, entry.choice.id));
+
+  const pinnedCards = Object.values(bundle.scenes)
+    .filter((candidate) => candidate.ui?.cardKind === "pinned-card")
+    .filter((candidate) => isSceneVisible(candidate, session.state))
+    .map((candidate) => createCardSnapshot(bundle, candidate, session.state, targetChoiceIdsBySceneId.get(candidate.id)));
+
+  return {
+    decks: choiceCards.filter((card) => card.ui?.cardKind === "deck"),
+    hand: choiceCards.filter((card) => card.ui?.cardKind === "card"),
+    pinnedCards,
+    pinnedDescription: typeof session.state.flags.pinnedCardsDescription === "string"
+      ? session.state.flags.pinnedCardsDescription
+      : undefined,
+    maxCards: scene.ui.maxCards,
+  };
 }
 
 export function renderCurrentScene(
@@ -223,6 +304,7 @@ export function createSessionSnapshot(
     subtitle: scene?.subtitle ? formatBundleText(bundle, scene.subtitle, session.state) : null,
     time: { ...session.state.time },
     visibleChoices: createChoiceSnapshots(bundle, session),
+    board: createBoardSnapshot(bundle, session),
   };
 }
 
@@ -286,5 +368,38 @@ export function applyChoice(
       }
       nextState.currentSceneId = resolvedSceneId;
     }
+  });
+}
+
+export function navigateToScene(
+  bundle: GameBundle,
+  session: Readonly<GameSession>,
+  sceneIdOrTag: string,
+): GameSession {
+  const currentSceneId = getCurrentSceneId(bundle, session);
+  const resolvedSceneId = bundle.resolveSceneId?.(sceneIdOrTag, session.state) ?? sceneIdOrTag;
+
+  if (!resolvedSceneId || !bundle.scenes[resolvedSceneId]) {
+    return session as GameSession;
+  }
+
+  return mutateGameSession(session as GameSession, (nextState) => {
+    if (resolvedSceneId !== currentSceneId && bundle.scenes[currentSceneId]) {
+      nextState.history = [...nextState.history, currentSceneId].slice(-MAX_HISTORY_LENGTH);
+    }
+    nextState.currentSceneId = resolvedSceneId;
+  });
+}
+
+export function navigateBack(
+  bundle: GameBundle,
+  session: Readonly<GameSession>,
+): GameSession {
+  return mutateGameSession(session as GameSession, (nextState) => {
+    const previousSceneId = nextState.history.pop();
+    nextState.currentSceneId =
+      previousSceneId && bundle.scenes[previousSceneId]
+        ? previousSceneId
+        : resolveInitialSceneId(bundle, nextState);
   });
 }

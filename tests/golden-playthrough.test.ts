@@ -6,9 +6,11 @@ import {
   applyChoice,
   createChoiceSnapshots,
   createSession,
+  createSessionSnapshot,
   getCurrentSceneId,
   hydrateContentBundle,
   mutateGameSession,
+  renderCurrentScene,
   runCurrentSceneArrival,
   runCurrentSceneDisplay,
 } from "@dsd/engine";
@@ -145,6 +147,22 @@ test("golden playthrough: dynamic mode reaches the main strategy deck", () => {
   assert.equal(session.state.flags.started, 1);
   assert.equal(session.state.flags.dynamic_mode, 1);
   assert.equal(session.state.flags.difficulty, -1);
+
+  const board = createSessionSnapshot(bundle, session).board;
+  assert.ok(board);
+  assert.deepEqual(board.decks.map((card) => card.title), ["Party Affairs"]);
+  assert.deepEqual(board.pinnedCards.map((card) => card.title), [
+    "Rudolf Hilferding",
+    "Hermann Müller",
+    "Shuffle Leadership",
+    "Otto Wels",
+  ]);
+  assert.equal(board.hand.length, 0);
+  assert.equal(board.maxCards, 4);
+
+  const bodyHtml = renderCurrentScene(bundle, session);
+  assert.doesNotMatch(bodyHtml, /\[\?\s*if/);
+  assert.doesNotMatch(bodyHtml, /\[\+/);
 });
 
 test("golden playthrough: advisor and government paths return to the main deck", () => {
@@ -201,6 +219,20 @@ test("golden playthrough: advisor and government paths return to the main deck",
 
   session = choose(session, "root");
   assert.equal(getCurrentSceneId(bundle, session), "main.main_easy");
+});
+
+test("golden playthrough: library detail pages render instead of bouncing to the menu", () => {
+  let session = stabilizeSession(
+    bundle,
+    mutateGameSession(createSession(bundle), (state) => {
+      state.currentSceneId = "library.menu";
+    }),
+  );
+
+  session = choose(session, "figures");
+
+  assert.equal(getCurrentSceneId(bundle, session), "library.figures");
+  assert.match(renderCurrentScene(bundle, session), /Reichstag composition/);
 });
 
 test("golden playthrough: election resolution and post-election coalition routing stay reachable", () => {

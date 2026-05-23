@@ -33,4 +33,5 @@ Run these after code changes when practical:
 - Prefer pure TypeScript engine functions and JSON data boundaries.
 - Keep generated content deterministic.
 - Preserve scene IDs and local save compatibility unless a migration explicitly handles the change.
+- Preserve the original DendryNexus UI presentation as much as practical; avoid broad visual redesign unless the user explicitly asks for it or a compatibility issue requires it.
 - Raw repo-authored HTML is currently trusted content; do not add sanitization unless the product decision changes.

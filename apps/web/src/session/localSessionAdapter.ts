@@ -5,12 +5,13 @@ import {
   createSessionSnapshot,
   deserializeSession,
   getCurrentSceneId,
+  navigateBack,
+  navigateToScene,
   renderCurrentScene,
   runCurrentSceneArrival,
   runCurrentSceneDisplay,
   serializeSession,
 } from "@dsd/engine";
-import { legacyGameBundle } from "../content/bundle";
 import type {
   GameBundle,
   GameSession,
@@ -46,9 +47,7 @@ function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Unknown session persistence error.";
 }
 
-export function createLocalSessionAdapter(
-  bundle: GameBundle = legacyGameBundle,
-): SessionAdapter {
+export function createLocalSessionAdapter(bundle: GameBundle): SessionAdapter {
   const storageKey = getSessionStorageKey(bundle.id);
   const readableStorageKeys = getReadableSessionStorageKeys(bundle.id);
   const listeners = new Set<(view: SessionView) => void>();
@@ -160,6 +159,14 @@ export function createLocalSessionAdapter(
     async choose(choiceId: string) {
       persistenceError = null;
       return hydrateSession(applyChoice(bundle, currentSession, choiceId));
+    },
+    async goToScene(sceneIdOrTag: string) {
+      persistenceError = null;
+      return hydrateSession(navigateToScene(bundle, currentSession, sceneIdOrTag));
+    },
+    async goBack() {
+      persistenceError = null;
+      return hydrateSession(navigateBack(bundle, currentSession));
     },
     async save() {
       persistenceError = null;

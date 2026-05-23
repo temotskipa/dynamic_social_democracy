@@ -62,8 +62,8 @@ export interface ContentValidationOptions {
   missingChoiceTargetSeverity?: "error" | "warning";
 }
 
-const REQUIRED_CONDITIONS = new Set(["flags.compare", "legacy.expression"]);
-const REQUIRED_EFFECTS = new Set(["flags.patch", "legacy.script", "legacy.goto"]);
+const REQUIRED_CONDITIONS = new Set(["flags.compare", "flags.expression", "legacy.expression"]);
+const REQUIRED_EFFECTS = new Set(["flags.patch", "ui.legacyLayout", "legacy.script", "legacy.goto"]);
 const SPECIAL_CHOICE_TARGETS = new Set(["backSpecialScene"]);
 
 export function validateContentBundle(
