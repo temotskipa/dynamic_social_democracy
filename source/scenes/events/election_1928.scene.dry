@@ -3403,6 +3403,10 @@ if (Q.cvp_economy_accepted && Q.budget < 0) {
 go-to: social_catholic_coalition_cvp_2 if not left_split; social_catholic_coalition_cvp_3 if left_split; social_catholic_coalition_cvp_4 if z_r > (spd_r + bvp_r)
 achievement: historischer_kompromiss
 
+@social_catholic_coalition_cvp_4
+go-to: social_catholic_coalition_cvp_2 if not left_split; social_catholic_coalition_cvp_3 if left_split
+achievement: merz_und_scholz
+
 @social_catholic_coalition_cvp_2
 go-to: social_catholic_coalition_cvp_3
 achievement: frahm_und_brandt
@@ -3410,10 +3414,6 @@ achievement: frahm_und_brandt
 @social_catholic_coalition_cvp_3
 on-arrival: leverage -= 10; leverage += 5 if cvp_ideology == "Left"; in_weimar_coalition = 1; in_social_catholic_coalition = 1; spd_in_government = 1; in_popular_front = 0; in_left_front = 0; foreign_minister_party = "Z"; interior_minister_party = "Z"; justice_minister_party = "Z"; labor_minister_party = "Z"; reichswehr_minister_party = "I"; finance_minister_party = "Z"; economic_minister_party = "Z"; agriculture_minister_party = "Z"; foreign_minister = "Wirth"; interior_minister = "Wirth"; justice_minister = "Guérard"; labor_minister = "Stegerwald"; reichswehr_minister = "Groener"; economic_minister = "Brüning"; finance_minister = "Köhler"; agriculture_minister = "Hermes"; dvp_right += 2; ddp_right += 4; ddp_cohesion -= 3; lvp_right += 3; hindenburg_angry = 30; liberal_cooperation += 5; z_relation += 10; workers_z += 3; unemployed_z += 3; new_middle_z -= 6; old_middle_z -= 10; rural_z -= 6; catholics_z += 4; new_middle_dnf += 2; new_middle_dvp += 2; new_middle_ddp += 2; new_middle_lvp += 4; old_middle_dnf += 6; old_middle_dvp += 4; old_middle_dvp += 4; rural_dnf += 4; rural_dvp += 2; rural_lvp += 2
 achievement: sozialchristliche_koalition
-
-@social_catholic_coalition_cvp_4
-go-to: social_catholic_coalition_cvp_2 if not left_split; social_catholic_coalition_cvp_3 if left_split
-achievement: merz_und_scholz
 
 We have somehow convinced the <span style="color: #000000;">**[+ z_party_name +]**</span> to enter in a <span style="color: #c00000;">Social</span>-<span style="color: #000000;">Christian</span> Coalition with us! The <span style="color: #3E88B3;">nationalist</span> elements within the <span style="color: #000000;">**[+ z_party_name +]**</span> are disgusted by this, never actually expecting the negotiations to have a successful conclusion. They're refusing to participate in government through cabinet positions as to not be associated with the <span style="color: #c00000;">socialists</span>.
 
